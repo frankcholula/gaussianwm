@@ -13,7 +13,8 @@ context_length: 2
 action_dim: 10  # DROID uses 10-dimensional actions (absolute coordinates + gripper)
 image_size: 128  # Matches crop size in config
 # shuffle_buffer_size: 100_000
-shuffle_buffer_size: 10  # fast debug
+# shuffle_buffer_size: 10  # fast debug
+shuffle_buffer_size: 1000
 
 # Point cloud parameters (for Gaussian Splatting)
 point_cloud_size: 4096

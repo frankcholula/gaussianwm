@@ -229,8 +229,11 @@ class DroidDataset(IterableDataset):
         self.dataset = self.dataset.map(robomimic_transform, num_parallel_calls=48)
         
     def __iter__(self):
-        """Iterate over the dataset."""
+        """Iterate over the dataset, capped at one epoch."""
+        count = 0
         for sample in self.dataset.as_numpy_iterator():
+            if count >= self.dataset_length:
+                return
             # Convert to the expected format (obs_frames, action, reward)
             # print(f"{sample.keys()=}")
             # sample.keys()=dict_keys(['obs', 'actions'])
@@ -268,6 +271,7 @@ class DroidDataset(IterableDataset):
             obs = left_frames
             # yield obs, action, reward, pad_mask
             yield obs, action, reward
+            count += 1
 
     def __len__(self):
         # lengths = np.array(

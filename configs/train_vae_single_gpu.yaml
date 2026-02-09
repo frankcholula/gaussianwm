@@ -1,0 +1,69 @@
+# @package _global_
+defaults:
+  - dataset: droid
+  - vae: transformer
+  - _self_
+
+# General settings
+seed: 0
+device: cuda
+
+# Model settings
+model:
+  name: ae_d64_m64
+  point_cloud_size: 2048
+
+# Training settings
+train:
+  batch_size: 32
+  epochs: 10
+  accum_iter: 1
+  eval_every: 5
+  save_every: 5
+
+# Optimizer settings
+optimizer:
+  lr: null
+  blr: 1e-4
+  epochs: ${train.epochs}
+  warmup_epochs: 5
+  weight_decay: 0.05
+  clip_grad: null
+  layer_decay: 0.75
+  min_lr: 1e-6
+
+# Dataloader settings
+dataloader:
+  num_workers: 0
+  pin_memory: false
+  prefetch_factor: 2
+
+# Distributed training settings
+distributed:
+  rank: null
+  gpu: null
+  distributed: false
+  world_size: 1
+  local_rank: -1
+  dist_on_itp: false
+  dist_backend: nccl
+  dist_url: env://
+  dist_eval: false
+
+# Logging and output
+output_dir: logs/vae_single_gpu/
+log_dir: logs/vae_single_gpu/
+use_wandb: true
+wandb:
+  project: GWM
+  name: ae_baseline_10ep
+
+# Resume training
+resume: null
+start_epoch: 0
+eval_only: false
+
+# CUDA settings
+cuda_visible_devices: 0
+master_port: 12345
+nproc_per_node: 1
