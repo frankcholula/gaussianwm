@@ -84,3 +84,29 @@ Goal: reproduce Splatt3r point cloud reconstruction through an AE, then a VAE, b
 - `configs/train_vae_single_gpu.yaml` — training hyperparams (epochs, batch size, lr)
 - `configs/dataset/droid.yaml` — dataset params (shuffle buffer, segment length, image size)
 - `configs/vae/transformer.yaml` — model architecture (use_kl toggle, depth, latent dim)
+
+### AE Run Results (completed)
+- **Config**: `train_vae_single_gpu` with `vae.use_kl=false`
+- **Model**: `AutoEncoder(depth=4, dim=64, num_latents=64, output_dim=14, num_inputs=2048)`, 0.81M params
+- **Training**: 10 epochs, batch_size=32, lr=1.25e-5 (base lr 1e-4, scaled by eff_batch_size/256), 5-epoch warmup, MSELoss
+- **GPU**: RTX 3090, ~17.6GB VRAM, ~3.75s/step, 10.57 hours total
+- **Loss progression** (MSE, per-epoch average):
+  - Epoch 0: 0.0494 (rapid drop from 0.59 initial)
+  - Epochs 1–3: ~0.014 (plateau during warmup phase)
+  - Epoch 4: 0.0042 (warmup ends, learning rate fully ramped)
+  - Epoch 9: 0.0014 (final)
+- **Checkpoint**: `logs/vae_single_gpu/checkpoint-9.pth`
+- **Reconstruction notebook**: `notebooks/ae_reconstruction.ipynb`
+- **Evaluation** (single-sample, eval mode):
+  - Overall MSE: 0.000725 (better than training avg — expected for single sample)
+  - Best dims: scales (0.000013–0.000018), opacity (0.000108) — near-perfect
+  - Moderate dims: x/y position (0.0002), SH colors (0.0006–0.0019)
+  - Worst dims: z/depth (0.001373), rotations (0.0006–0.0015)
+  - Qualitative: XYZ spatial structure preserved, but sharp distributions (scales, SH bimodal peaks, opacity near 1.0) get blurred — typical MSE-trained AE behavior
+- **Verdict**: AE reconstruction working. Loss still decreasing at epoch 9. Sufficient to validate the encode/decode pipeline. See "Next steps" below for VAE recommendations.
+
+### Next steps: VAE training recommendations
+- **More epochs first**: Train AE to 20 epochs before switching to VAE — loss was clearly still decreasing at epoch 9 (0.0014 → likely ~0.0007 by epoch 20 based on the trend). Resume from checkpoint-9: `resume=logs/vae_single_gpu/checkpoint-9.pth train.epochs=20`
+- **Consider num_latents=128**: Current 64 latents gives ~7x compression (2048×14 → 64×64). Doubling to 128 latents would halve compression and likely improve reconstruction of fine details (rotations, SH colors) at modest compute cost.
+- **VAE kl_weight**: Hardcoded at 1e-3 in `train_vae.py:42`. Start there but monitor reconstruction vs KL tradeoff — if reconstruction degrades too much, try 1e-4.
+- **dim=64 is small**: 0.81M params is tiny. For VAE, the KL bottleneck further constrains capacity. If reconstruction quality drops significantly with `use_kl=true`, try dim=128 (will increase params to ~3M).
