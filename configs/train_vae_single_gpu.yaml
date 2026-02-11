@@ -56,7 +56,7 @@ log_dir: logs/vae_single_gpu/
 use_wandb: true
 wandb:
   project: GWM
-  name: ae_baseline_10ep
+  name: ae_baseline_20ep
 
 # Resume training
 resume: null
