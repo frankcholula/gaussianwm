@@ -16,7 +16,7 @@ model:
 # Training settings
 train:
   batch_size: 32
-  epochs: 10
+  epochs: 20
   accum_iter: 1
   eval_every: 5
   save_every: 5
