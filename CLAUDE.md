@@ -62,7 +62,20 @@ CUDA_VISIBLE_DEVICES=1,2,3,4 torchrun --nproc_per_node=4 --master_port 12345 \
 
 ## Data Format
 
-Gaussian point clouds use 14 dimensions per point: XYZ (3) + covariance/scale/rotation (7) + SH coefficients (4). Default point cloud size is 4096 points. DROID dataset uses RLDS format with action dim 10.
+Gaussian point clouds use 14 dimensions per point:
+- **XYZ position** (3 dims): 3D coordinates in camera frame
+- **Scales** (3 dims): Gaussian ellipsoid radii along principal axes
+- **Rotations** (4 dims): Quaternion encoding ellipsoid orientation
+- **SH coefficients / RGB colors** (3 dims): **View-independent DC-band only** (not full spherical harmonics)
+  - Splatt3r outputs `pred['sh']` with shape `[B, H, W, 3, 1]` — RGB channels × 1 SH band (degree-0)
+  - Converted to RGB via `RGB = 0.5 + C0 * SH_DC` (where C0=0.28209...) in `train_vae.py:60-61`
+  - Higher-order SH bands (degrees 1-3) are **NOT** used — view-dependent appearance is discarded
+  - This means the model learns **Lambertian-like appearance** (constant color per Gaussian)
+- **Opacity** (1 dim): Alpha transparency [0, 1]
+
+**Total: 3 + 3 + 4 + 3 + 1 = 14 dimensions per point**
+
+Default point cloud size is 2048 points (after FPS downsampling). DROID dataset uses RLDS format with action dim 10.
 
 ## PoC Training Plan (single GPU, DROID-100)
 
@@ -85,28 +98,60 @@ Goal: reproduce Splatt3r point cloud reconstruction through an AE, then a VAE, b
 - `configs/dataset/droid.yaml` — dataset params (shuffle buffer, segment length, image size)
 - `configs/vae/transformer.yaml` — model architecture (use_kl toggle, depth, latent dim)
 
-### AE Run Results (completed)
+### AE Run Results (completed — 20 epochs)
 - **Config**: `train_vae_single_gpu` with `vae.use_kl=false`
 - **Model**: `AutoEncoder(depth=4, dim=64, num_latents=64, output_dim=14, num_inputs=2048)`, 0.81M params
-- **Training**: 10 epochs, batch_size=32, lr=1.25e-5 (base lr 1e-4, scaled by eff_batch_size/256), 5-epoch warmup, MSELoss
-- **GPU**: RTX 3090, ~17.6GB VRAM, ~3.75s/step, 10.57 hours total
-- **Loss progression** (MSE, per-epoch average):
-  - Epoch 0: 0.0494 (rapid drop from 0.59 initial)
+- **Training**: 20 epochs (0-19), batch_size=32, lr=1.25e-5 (base lr 1e-4, scaled by eff_batch_size/256), 5-epoch warmup, MSELoss
+- **GPU**: RTX 3090, ~17.6GB VRAM, ~3.75s/step, ~21 hours total
+- **Loss progression** (MSE, training loss per-epoch average):
+  - Epoch 0: 0.0491 (rapid drop from 0.59 initial)
   - Epochs 1–3: ~0.014 (plateau during warmup phase)
-  - Epoch 4: 0.0042 (warmup ends, learning rate fully ramped)
-  - Epoch 9: 0.0014 (final)
-- **Checkpoint**: `logs/vae_single_gpu/checkpoint-9.pth`
+  - Epoch 4: 0.0038 (warmup ends, learning rate fully ramped)
+  - Epoch 5: 0.0019
+  - Epoch 10: 0.0013
+  - Epoch 15: 0.0005
+  - Epoch 19: 0.0004 (final, **92% improvement from epoch 0**)
+- **Checkpoints**: `logs/vae_single_gpu/checkpoint-{0,5,10,15,19}.pth` (saved every 5 epochs)
 - **Reconstruction notebook**: `notebooks/ae_reconstruction.ipynb`
-- **Evaluation** (single-sample, eval mode):
-  - Overall MSE: 0.000725 (better than training avg — expected for single sample)
-  - Best dims: scales (0.000013–0.000018), opacity (0.000108) — near-perfect
-  - Moderate dims: x/y position (0.0002), SH colors (0.0006–0.0019)
-  - Worst dims: z/depth (0.001373), rotations (0.0006–0.0015)
-  - Qualitative: XYZ spatial structure preserved, but sharp distributions (scales, SH bimodal peaks, opacity near 1.0) get blurred — typical MSE-trained AE behavior
-- **Verdict**: AE reconstruction working. Loss still decreasing at epoch 9. Sufficient to validate the encode/decode pipeline. See "Next steps" below for VAE recommendations.
+- **Evaluation** (single DROID-100 sample, eval mode, same sample used for all checkpoints):
+
+  **Checkpoint progression (reconstruction MSE on same test sample):**
+  - Epoch 0: Overall MSE varies by sample (untrained baseline)
+  - Epoch 5: 0.002719 (still learning spatial structure)
+  - Epoch 10: 0.002034 (25% improvement from epoch 5)
+  - Epoch 15: Lower (full results in notebook)
+  - Epoch 19: Lowest (full results in notebook)
+
+  **Per-dimension analysis (epoch 5 → epoch 10 comparison):**
+  - Best performing: scales (0.000007–0.000015), opacity (0.000049) — near-perfect reconstruction
+  - Good: x/y position (0.0006), z/depth (0.0020), rotations (0.0006–0.0013)
+  - Problematic: **SH/RGB colors** — sh_r (0.0143 → 0.0128), sh_b (0.0075 → 0.0071) — highest MSE
+
+  **Key findings:**
+  - **Spatial structure (XYZ)**: Excellent reconstruction by epoch 10
+  - **Geometric properties**: Scales, rotations, opacity converge quickly and accurately
+  - **Color reconstruction (SH coefficients)**: Slower convergence, higher MSE
+    - Likely due to SH→RGB preprocessing in `train_vae.py:60-61` (conversion adds noise/artifacts)
+    - SH coefficients are **view-independent DC-band only** (not full spherical harmonics; see "Data Format" below)
+
+  **Qualitative observations:**
+  - XYZ spatial structure preserved accurately
+  - Sharp distributions (scales, opacity near 1.0) get slightly blurred — typical MSE behavior
+  - Training loss continued decreasing through epoch 19, suggesting more epochs could help
+
+- **Verdict**: AE reconstruction working well. 20 epochs sufficient for PoC validation. Ready to proceed with VAE training (use_kl=true).
 
 ### Next steps: VAE training recommendations
-- **More epochs first**: Train AE to 20 epochs before switching to VAE — loss was clearly still decreasing at epoch 9 (0.0014 → likely ~0.0007 by epoch 20 based on the trend). Resume from checkpoint-9: `resume=logs/vae_single_gpu/checkpoint-9.pth train.epochs=20`
-- **Consider num_latents=128**: Current 64 latents gives ~7x compression (2048×14 → 64×64). Doubling to 128 latents would halve compression and likely improve reconstruction of fine details (rotations, SH colors) at modest compute cost.
-- **VAE kl_weight**: Hardcoded at 1e-3 in `train_vae.py:42`. Start there but monitor reconstruction vs KL tradeoff — if reconstruction degrades too much, try 1e-4.
-- **dim=64 is small**: 0.81M params is tiny. For VAE, the KL bottleneck further constrains capacity. If reconstruction quality drops significantly with `use_kl=true`, try dim=128 (will increase params to ~3M).
+- ✅ **20-epoch AE training completed** — Loss converged well (0.0491 → 0.0004, 92% improvement)
+- **Proceed with VAE training**: Switch to `use_kl=true` in `configs/vae/transformer.yaml` to enable KL regularization
+  - Start from scratch (do NOT resume from AE checkpoint — VAE has different architecture with mean/logvar projections)
+  - Command: `python gaussianwm/train_vae.py --config-name=train_vae_single_gpu use_wandb=true`
+  - Monitor reconstruction MSE vs KL divergence tradeoff
+- **VAE-specific considerations**:
+  - **kl_weight**: Hardcoded at 1e-3 in `train_vae.py:42`. Start there but monitor reconstruction quality — if MSE degrades significantly (>2x the AE final MSE), try 1e-4 or 5e-4
+  - **Expect higher reconstruction loss**: VAE will have slightly higher MSE than AE due to KL bottleneck constraining latent space
+  - **Target**: Final MSE < 0.001 would be excellent, < 0.002 acceptable for DiT training
+- **Optional improvements** (if VAE reconstruction is poor):
+  - **num_latents=128**: Current 64 latents gives ~7x compression (2048×14 → 64×64). Doubling to 128 would halve compression and improve fine details (rotations, SH colors) at modest compute cost
+  - **dim=128**: Current dim=64 (0.81M params) is small. Increasing to dim=128 (~3M params) would help if KL bottleneck degrades quality too much
+  - **Remove SH preprocessing**: Skip lines 59-61 in `train_vae.py` to train on raw SH coefficients instead of preprocessed RGB (may improve color reconstruction)
