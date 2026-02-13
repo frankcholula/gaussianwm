@@ -141,17 +141,39 @@ Goal: reproduce Splatt3r point cloud reconstruction through an AE, then a VAE, b
 
 - **Verdict**: AE reconstruction working well. 20 epochs sufficient for PoC validation. Ready to proceed with VAE training (use_kl=true).
 
+### Bugs found and fixed before VAE run
+
+#### Bug 1: KLAutoEncoder.encode() FPS shape mismatch (critical)
+- **File**: `encoder/models_ae.py`, `KLAutoEncoder.encode()`
+- **Symptom**: `RuntimeError: shape '[320, -1, 3]' is invalid for input of size 896` on first forward pass with `use_kl=true`
+- **Root cause**: The FPS sampling block was ported from a PyTorch Geometric-style pattern (flatten all batches into `[B*N, D]`, track batch indices, run FPS once globally). However:
+  1. The `batch` index tensor was computed but **never passed** to the `fps()` call, so FPS selected 64 points globally instead of 64 per batch
+  2. The codebase uses `pytorch3d.ops.sample_farthest_points`, which handles batching natively (`[B, N, 3]` input) — the PyG-style flatten+batch approach was unnecessary
+  3. The reshape `view(B, -1, 3)` hardcoded dim `3` instead of `D=14`, a leftover from when the model only used XYZ coordinates
+- **Fix**: Replaced with the same working pattern from `AutoEncoder.encode()`: `fps(pc[..., :3], K=self.num_latents)` + `torch.gather()` to preserve per-batch structure and all 14 features
+- **Note**: `AutoEncoder.encode()` was correct all along — this bug only affected the `KLAutoEncoder` (VAE) path
+
+#### Bug 2: Splatt3r running in degenerate single-image mode
+- **Files**: `processor/datasets.py`, `train_vae.py`, `processor/regressor.py`
+- **Symptom**: Splatt3r (a stereo reconstruction model) was receiving the same image for both views
+- **Root cause**: The dataset loaded both left (`varied_camera_1_left_image`) and right (`varied_camera_2_left_image`) camera frames but only yielded the left frame. `regressor.py:568` duplicated it: `view2_tensor = view1_tensor if len(image_tensors) == 1`. The eval loop even extracted both images but only passed `image1` to Splatt3r.
+- **Fix**:
+  1. Dataset now yields `(left_frames, right_frames, action, reward)` instead of `(left_frames, action, reward)`
+  2. Both training and eval loops pass stereo pairs: `splatt3r.forward_tensor(left, right)`
+  3. `forward_tensor` now accepts variadic `*image_tensors` to pass through both views
+- **Watch for**: `gaussian_feature_to_dim` in `regressor.py` includes `means_in_other_view` (3 dims). If stereo mode causes Splatt3r to populate this field, the tensor becomes 17D instead of 14D, which would crash `PointEmbed` (hardcoded `nn.Linear(hidden_dim + 14, dim)`). Left as-is for now — fix if it surfaces.
+
 ### Next steps: VAE training recommendations
 - ✅ **20-epoch AE training completed** — Loss converged well (0.0491 → 0.0004, 92% improvement)
-- **Proceed with VAE training**: Switch to `use_kl=true` in `configs/vae/transformer.yaml` to enable KL regularization
+- **Proceed with VAE training**: Set `use_kl=true` via CLI override (do NOT edit `configs/vae/transformer.yaml` — keep it as `use_kl: false` default)
   - Start from scratch (do NOT resume from AE checkpoint — VAE has different architecture with mean/logvar projections)
-  - Command: `python gaussianwm/train_vae.py --config-name=train_vae_single_gpu use_wandb=true`
+  - Command: `python gaussianwm/train_vae.py --config-name=train_vae_single_gpu vae.use_kl=true use_wandb=true`
   - Monitor reconstruction MSE vs KL divergence tradeoff
 - **VAE-specific considerations**:
-  - **kl_weight**: Hardcoded at 1e-3 in `train_vae.py:42`. Start there but monitor reconstruction quality — if MSE degrades significantly (>2x the AE final MSE), try 1e-4 or 5e-4
+  - **kl_weight**: Configured at 1e-3 in `train_vae_single_gpu.yaml`. Start there but monitor reconstruction quality — if MSE degrades significantly (>2x the AE final MSE), try 1e-4 or 5e-4
   - **Expect higher reconstruction loss**: VAE will have slightly higher MSE than AE due to KL bottleneck constraining latent space
   - **Target**: Final MSE < 0.001 would be excellent, < 0.002 acceptable for DiT training
 - **Optional improvements** (if VAE reconstruction is poor):
-  - **num_latents=128**: Current 64 latents gives ~7x compression (2048×14 → 64×64). Doubling to 128 would halve compression and improve fine details (rotations, SH colors) at modest compute cost
+  - **num_latents=128**: Current 64 latents gives ~7x compression (2048x14 -> 64x64). Doubling to 128 would halve compression and improve fine details (rotations, SH colors) at modest compute cost
   - **dim=128**: Current dim=64 (0.81M params) is small. Increasing to dim=128 (~3M params) would help if KL bottleneck degrades quality too much
   - **Remove SH preprocessing**: Skip lines 59-61 in `train_vae.py` to train on raw SH coefficients instead of preprocessed RGB (may improve color reconstruction)

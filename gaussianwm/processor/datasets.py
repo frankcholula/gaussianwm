@@ -268,9 +268,7 @@ class DroidDataset(IterableDataset):
             #     "robot0_agentview_left_image": left_frames, # (T, H, W, C)
             #     "robot0_agentview_right_image": right_frames,
             # }
-            obs = left_frames
-            # yield obs, action, reward, pad_mask
-            yield obs, action, reward
+            yield left_frames, right_frames, action, reward
             count += 1
 
     def __len__(self):

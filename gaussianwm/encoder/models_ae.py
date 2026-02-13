@@ -337,27 +337,14 @@ class KLAutoEncoder(nn.Module):
         self.logvar_fc = nn.Linear(dim, latent_dim)
 
     def encode(self, pc):
-        # pc: B x N x 3
+        # pc: B x N x D (D=14: xyz + features)
         B, N, D = pc.shape
         assert N == self.num_inputs
-        
-        ###### fps
-        flattened = pc.view(B*N, D)
 
-        batch = torch.arange(B).to(pc.device)
-        batch = torch.repeat_interleave(batch, N)
-
-        pos = flattened
-
-        ratio = 1.0 * self.num_latents / self.num_inputs
-        
-        K = int(N * ratio)
-        batch_tensor = batch.view(-1, 1).repeat(1, 3)
-        _, idx = fps(pos.unsqueeze(0), K=K)
-        idx = idx.squeeze(0)
-        
-        sampled_pc = pos[idx]
-        sampled_pc = sampled_pc.view(B, -1, 3)
+        ###### FPS sampling based on XYZ coordinates
+        _, sampled_indices = fps(pc[..., :3], K=self.num_latents)
+        sampled_pc = torch.gather(pc, 1,
+            sampled_indices.unsqueeze(-1).expand(-1, -1, D))  # [B, num_latents, D]
         ######
 
         sampled_pc_embeddings = self.point_embed(sampled_pc)

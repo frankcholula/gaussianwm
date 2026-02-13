@@ -46,15 +46,14 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, los
         cprint(f'log_dir: {log_writer.log_dir}', 'green')
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-        obs = batch[0]
+        left = TensorUtils.to_device(TensorUtils.to_float(batch[0]), device)
+        right = TensorUtils.to_device(TensorUtils.to_float(batch[1]), device)
 
-        image1 = obs
-        image1 = TensorUtils.to_device(TensorUtils.to_float(image1), device)
-
-        image1 = einops.rearrange(image1, 'b t h w c -> (b t) c h w')
+        left = einops.rearrange(left, 'b t h w c -> (b t) c h w')
+        right = einops.rearrange(right, 'b t h w c -> (b t) c h w')
 
         with torch.no_grad():
-            points, _ = splatt3r.forward_tensor(image1)
+            points, _ = splatt3r.forward_tensor(left, right)
 
         SH_C0 = 0.28209479177387814
         colors = 0.5 + SH_C0 * points[..., -4:-1]
@@ -127,17 +126,14 @@ def evaluate(model, data_loader, device, cfg, splatt3r=None):
     header = 'Eval:'
 
     for batch in tqdm(metric_logger.log_every(data_loader, 50, header), desc="Evaluation"):
-        obs = batch[0]
+        left = TensorUtils.to_device(TensorUtils.to_float(batch[0]), device)
+        right = TensorUtils.to_device(TensorUtils.to_float(batch[1]), device)
 
-        image1, image2 = obs['robot0_agentview_left_image'], obs['robot0_agentview_right_image']
-        image1 = TensorUtils.to_device(TensorUtils.to_float(image1), device)
-        image2 = TensorUtils.to_device(TensorUtils.to_float(image2), device)
-
-        image1 = einops.rearrange(image1, 'b t h w c -> (b t) c h w')
-        image2 = einops.rearrange(image2, 'b t h w c -> (b t) c h w')
+        left = einops.rearrange(left, 'b t h w c -> (b t) c h w')
+        right = einops.rearrange(right, 'b t h w c -> (b t) c h w')
 
         with torch.no_grad():
-            points, _ = splatt3r.forward_tensor(image1)
+            points, _ = splatt3r.forward_tensor(left, right)
 
         SH_C0 = 0.28209479177387814
         colors = 0.5 + SH_C0 * points[..., -4:-1]
