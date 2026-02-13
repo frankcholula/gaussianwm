@@ -32,10 +32,6 @@ build:
 
 run:
 	@mkdir -p $(DATA_DIR) $(LOGS_DIR) $(CHECKPOINTS_DIR)
-	docker run $(DOCKER_RUN_FLAGS) $(IMAGE_NAME):$(IMAGE_TAG)
-
-shell:
-	@mkdir -p $(DATA_DIR) $(LOGS_DIR) $(CHECKPOINTS_DIR)
 	docker run -it $(DOCKER_RUN_FLAGS) $(IMAGE_NAME):$(IMAGE_TAG) /bin/bash
 
 test:
