@@ -41,6 +41,7 @@ dependencies = [
     "wandb",
     "termcolor",
     "dotmap",
+    "safetensors",
     "tensorflow",
     "tensorflow-datasets",
     "tensorflow-graphics",

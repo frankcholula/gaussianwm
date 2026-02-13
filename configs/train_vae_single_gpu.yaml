@@ -20,6 +20,7 @@ train:
   accum_iter: 1
   eval_every: 5
   save_every: 5
+  kl_weight: 1e-3
 
 # Optimizer settings
 optimizer:

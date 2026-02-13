@@ -38,7 +38,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, los
     print_freq = 20
 
     accum_iter = cfg.train.accum_iter
-    kl_weight = 1e-3
+    kl_weight = cfg.train.get('kl_weight', 1e-3)
 
     optimizer.zero_grad()
 

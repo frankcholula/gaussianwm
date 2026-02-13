@@ -51,7 +51,7 @@ COPY pyproject.toml uv.lock ./
 # Remove 13 unused deps + swap opencv for headless variant
 RUN sed -i \
     -e '/"pyrealsense2"/d' \
-    -e '/"trimesh/d' \
+    -e '/"trimesh"/d' \
     -e '/"imageio-ffmpeg/d' \
     -e '/"opencv-contrib-python"/d' \
     -e '/"open3d"/d' \
