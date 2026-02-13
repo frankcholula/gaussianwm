@@ -135,7 +135,7 @@ def main():
         params_kl = sum(p.numel() for p in model_kl.parameters())
         out_kl = model_kl(x, x)
         assert "logits" in out_kl and "kl" in out_kl
-        print(f"  [PASS] KL-AE forward OK ({params_kl} params), kl={out_kl['kl'].item():.6f}")
+        print(f"  [PASS] KL-AE forward OK ({params_kl} params), kl={out_kl['kl'].mean().item():.6f}")
         results.append(True)
     except Exception as e:
         print(f"  [FAIL] {e}")

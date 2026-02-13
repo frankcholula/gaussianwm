@@ -1,15 +1,9 @@
-# =============================================================================
-# Gaussian World Model (GWM) Docker Image
-# Python 3.10, PyTorch 2.5.1, CUDA 12.1
-# =============================================================================
 FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG CUDA_ARCHS="8.0;8.6"
 
-# ---------------------------------------------------------------------------
-# 1. System dependencies (minimal — no GUI/X11 libs)
-# ---------------------------------------------------------------------------
+# System dependencies and Python 3.10 setup
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     python3.10-dev \
@@ -20,82 +14,63 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ninja-build \
     libgomp1 \
+    libglib2.0-0 \
     wget \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set Python 3.10 as default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 \
-    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10 \
+    && pip install uv
 
-# CUDA env for compiling extensions
+# CUDA environment for extension compilation
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 ENV TORCH_CUDA_ARCH_LIST=${CUDA_ARCHS}
 ENV MAX_JOBS=4
 
-# ---------------------------------------------------------------------------
-# 2. Install uv
-# ---------------------------------------------------------------------------
-RUN pip install uv
-
 WORKDIR /app
 
-# ---------------------------------------------------------------------------
-# 3. Copy dependency files and strip unused packages
-# ---------------------------------------------------------------------------
+# Copy dependency files and strip unused packages (swap opencv for headless variant)
 COPY pyproject.toml uv.lock ./
 
-# Remove 13 unused deps + swap opencv for headless variant
 RUN sed -i \
-    -e '/"pyrealsense2"/d' \
-    -e '/"trimesh"/d' \
-    -e '/"imageio-ffmpeg/d' \
-    -e '/"opencv-contrib-python"/d' \
-    -e '/"open3d"/d' \
-    -e '/"ipdb"/d' \
-    -e '/"atomics"/d' \
-    -e '/"gradio"/d' \
-    -e '/"viser"/d' \
-    -e '/"plyfile"/d' \
-    -e '/"peft/d' \
-    -e '/"huggingface_hub/d' \
-    -e '/"transformers/d' \
-    -e 's/"opencv-python"/"opencv-python-headless"/' \
+    -e '/pyrealsense2/d' \
+    -e '/trimesh/d' \
+    -e '/imageio-ffmpeg/d' \
+    -e '/opencv-contrib-python/d' \
+    -e '/open3d/d' \
+    -e '/ipdb/d' \
+    -e '/atomics/d' \
+    -e '/gradio/d' \
+    -e '/viser/d' \
+    -e '/peft/d' \
+    -e '/huggingface_hub/d' \
+    -e '/transformers/d' \
+    -e 's/opencv-python/opencv-python-headless/' \
     pyproject.toml
 
-# ---------------------------------------------------------------------------
-# 4. Install Python dependencies
-# ---------------------------------------------------------------------------
-RUN uv sync --no-install-project
+# Install Python dependencies including Splatt3r submodule dependencies
+RUN uv sync --no-install-project \
+    && uv pip install scikit-learn scikit-image scipy roma gitpython
 
-# Put the venv on PATH
 ENV PATH="/app/.venv/bin:${PATH}"
 ENV VIRTUAL_ENV="/app/.venv"
 
-# ---------------------------------------------------------------------------
-# 5. Copy submodule source (before CUDA compilation steps)
-# ---------------------------------------------------------------------------
+# Copy submodule source before CUDA compilation
 COPY third_party/ ./third_party/
 
-# ---------------------------------------------------------------------------
-# 6. Install CUDA extension packages (require torch already installed)
-# ---------------------------------------------------------------------------
-RUN uv pip install git+https://github.com/dcharatan/diff-gaussian-rasterization-modified --no-build-isolation
-RUN uv pip install git+https://github.com/facebookresearch/pytorch3d.git --no-build-isolation
+# Install CUDA extension packages (require torch already installed)
+RUN uv pip install git+https://github.com/dcharatan/diff-gaussian-rasterization-modified --no-build-isolation \
+    && uv pip install git+https://github.com/facebookresearch/pytorch3d.git --no-build-isolation
 
-# ---------------------------------------------------------------------------
-# 7. Compile CroCo CUDA kernels
-# ---------------------------------------------------------------------------
+# Compile CroCo CUDA kernels
 WORKDIR /app/third_party/splatt3r/src/mast3r_src/dust3r/croco/models/curope
 RUN python setup.py build_ext --inplace
 WORKDIR /app
 
-# ---------------------------------------------------------------------------
-# 8. Copy project source and install
-# ---------------------------------------------------------------------------
+# Copy project source and install
 COPY gaussianwm/ ./gaussianwm/
 COPY configs/ ./configs/
 COPY scripts/ ./scripts/
@@ -103,18 +78,13 @@ COPY CLAUDE.md README.md ./
 
 RUN uv pip install -e . --no-build-isolation
 
-# ---------------------------------------------------------------------------
-# 9. Copy verification test
-# ---------------------------------------------------------------------------
 COPY tests/test_install.py ./tests/test_install.py
 
-# ---------------------------------------------------------------------------
-# 10. Environment
-# ---------------------------------------------------------------------------
+# Environment setup
 ENV GWM_PATH=/app
-ENV PYTHONPATH="/app:${PYTHONPATH}"
+ENV PYTHONPATH="/app:/app/gaussianwm:/app/third_party/splatt3r:/app/third_party/splatt3r/src/pixelsplat_src:/app/third_party/splatt3r/src/mast3r_src:/app/third_party/splatt3r/src/mast3r_src/dust3r"
 
 RUN mkdir -p /app/data /app/logs \
     /app/third_party/splatt3r/checkpoints/splatt3r_v1.0
 
-CMD ["python", "tests/test_install.py"]
+CMD ["/bin/bash"]
