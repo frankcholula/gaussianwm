@@ -163,17 +163,47 @@ Goal: reproduce Splatt3r point cloud reconstruction through an AE, then a VAE, b
   3. `forward_tensor` now accepts variadic `*image_tensors` to pass through both views
 - **Watch for**: `gaussian_feature_to_dim` in `regressor.py` includes `means_in_other_view` (3 dims). If stereo mode causes Splatt3r to populate this field, the tensor becomes 17D instead of 14D, which would crash `PointEmbed` (hardcoded `nn.Linear(hidden_dim + 14, dim)`). Left as-is for now — fix if it surfaces.
 
-### Next steps: VAE training recommendations
-- ✅ **20-epoch AE training completed** — Loss converged well (0.0491 → 0.0004, 92% improvement)
-- **Proceed with VAE training**: Set `use_kl=true` via CLI override (do NOT edit `configs/vae/transformer.yaml` — keep it as `use_kl: false` default)
-  - Start from scratch (do NOT resume from AE checkpoint — VAE has different architecture with mean/logvar projections)
-  - Command: `python gaussianwm/train_vae.py --config-name=train_vae_single_gpu vae.use_kl=true use_wandb=true`
-  - Monitor reconstruction MSE vs KL divergence tradeoff
-- **VAE-specific considerations**:
-  - **kl_weight**: Configured at 1e-3 in `train_vae_single_gpu.yaml`. Start there but monitor reconstruction quality — if MSE degrades significantly (>2x the AE final MSE), try 1e-4 or 5e-4
-  - **Expect higher reconstruction loss**: VAE will have slightly higher MSE than AE due to KL bottleneck constraining latent space
-  - **Target**: Final MSE < 0.001 would be excellent, < 0.002 acceptable for DiT training
-- **Optional improvements** (if VAE reconstruction is poor):
-  - **num_latents=128**: Current 64 latents gives ~7x compression (2048x14 -> 64x64). Doubling to 128 would halve compression and improve fine details (rotations, SH colors) at modest compute cost
-  - **dim=128**: Current dim=64 (0.81M params) is small. Increasing to dim=128 (~3M params) would help if KL bottleneck degrades quality too much
-  - **Remove SH preprocessing**: Skip lines 59-61 in `train_vae.py` to train on raw SH coefficients instead of preprocessed RGB (may improve color reconstruction)
+### VAE Run Results (completed — 20 epochs)
+- **Config**: `train_vae_single_gpu` with `vae.use_kl=true` (CLI override)
+- **Model**: `KLAutoEncoder(depth=4, dim=64, num_latents=64, latent_dim=64, output_dim=14, num_inputs=2048)`, 0.83M params (825,166)
+- **Training**: 20 epochs (0-19), batch_size=32, lr=1.25e-5, 5-epoch warmup, MSELoss + KL (kl_weight=1e-3)
+- **Command**: `python gaussianwm/train_vae.py --config-name=train_vae_single_gpu vae.use_kl=true wandb.name=vae_baseline_20ep use_wandb=true`
+- **GPU**: RTX 3090, ~21 hours total
+- **Loss progression** (training loss per-epoch average):
+  - Epoch 0: loss_vol=0.0504, loss_kl=0.0818, total=0.0505
+  - Epoch 4: loss_vol=0.0099, loss_kl=0.0824, total=0.0099 (warmup ends)
+  - Epoch 5: loss_vol=0.0021, loss_kl=0.0885, total=0.0021
+  - Epoch 10: loss_vol=0.0013, loss_kl=0.0332, total=0.0013
+  - Epoch 15: loss_vol=0.00045, loss_kl=0.0111, total=0.00046
+  - Epoch 19: loss_vol=0.00031, loss_kl=0.00586, total=0.00032
+- **Checkpoints**: `logs/vae_single_gpu/checkpoint-{0,5,10,15,19}.pth`
+- **Reconstruction notebook**: `notebooks/vae_reconstruction.ipynb`
+
+  **Key findings:**
+  - **Reconstruction quality**: Final loss_vol (0.00031) comparable to AE final (0.00036) — KL bottleneck didn't hurt reconstruction
+  - **KL convergence**: Decreased monotonically 0.082 → 0.006 over 20 epochs — no posterior collapse, latent space is well-structured
+  - **kl_weight=1e-3 was appropriate**: Reconstruction quality preserved while regularizing the latent space
+
+- **Verdict**: VAE training successful. Latent space is well-structured (low KL, good reconstruction). Ready to proceed with DiT training.
+
+### Next steps: DiT training + policy extraction
+
+#### DiT PoC training
+- **Script**: `gaussianwm/train_diffusion.py` with config `configs/train_gwm.yaml`
+- **Architecture**: `GaussianPredictor` in `gwm_predictor.py` orchestrates Splatt3r + VAE + DiT + reward model
+- **Key integration**: `_process_obs()` converts RGB images → Splatt3r point clouds → VAE latents → DiT input
+- **Prerequisites**: `gwm_predictor.py` needs updates to integrate the pretrained VAE properly (checkpoint loading, freeze VAE weights, SH preprocessing, FPS downsampling, stereo pair support, VAE encode return value fix)
+- **DiT config**: `configs/world_model/gwm.yaml` — DiT-S/2, 384 hidden, 12 layers, EDM diffusion with Karras sampler
+
+#### Policy extraction
+- `gwm_predictor.rollout()` is the policy integration point — takes a `policy(obs, t) → action` callable and rolls out the world model autoregressively
+- `demo.py` currently uses `replay_policy` (ground-truth actions) for evaluation only
+- **Options for learned policy**:
+  1. **CEM/MPPI planning**: Optimize action sequences at inference time using world model + reward model as simulator (no policy network needed)
+  2. **Dreamer-style**: Train policy network end-to-end with DiT as differentiable world model
+  3. **Inverse dynamics**: Train action predictor on (s_t, s_{t+1}) pairs from dataset
+
+#### Benchmarks and evaluation
+- **World model quality**: Reconstruction MSE (point cloud space), FVD on predicted sequences, per-dimension Gaussian parameter accuracy
+- **Policy quality** (once policy exists): Task success rate on DROID manipulation tasks, action prediction MSE vs expert
+- **Computational**: Inference latency per rollout step, GPU memory footprint
