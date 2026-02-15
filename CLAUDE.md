@@ -22,13 +22,13 @@ uv pip install git+https://github.com/facebookresearch/pytorch3d.git --no-build-
 python gaussianwm/train_vae.py --config-name=train_vae_single_gpu use_wandb=true
 
 # VAE (multi-GPU, 4x)
-bash scripts/pretrain/vae.sh
+bash scripts/vae/train_vae_multi_gpu.sh
 
 # Diffusion Transformer (multi-GPU)
-bash scripts/pretrain/dit.sh
+bash scripts/dit/train_dit_multi_gpu.sh
 
 # VAE dry-run test
-bash scripts/test_vae_dryrun.sh
+bash scripts/vae/test_vae_dryrun.sh
 
 # Inference
 python gaussianwm/demo.py
@@ -183,6 +183,7 @@ Goal: reproduce Splatt3r point cloud reconstruction through an AE, then a VAE, b
   - **Reconstruction quality**: Final loss_vol (0.00031) comparable to AE final (0.00036) — KL bottleneck didn't hurt reconstruction
   - **KL convergence**: Decreased monotonically 0.082 → 0.006 over 20 epochs — no posterior collapse, latent space is well-structured
   - **kl_weight=1e-3 was appropriate**: Reconstruction quality preserved while regularizing the latent space
+  - **Scale reconstruction (known issue)**: Scale dims have the lowest absolute MSE (0.000001–0.000018) but worst *relative* reconstruction — their value range is ~0.001–0.016, so even tiny errors represent ~28% of the full range. Two contributing factors: (1) MSE loss is magnitude-biased, so the optimizer under-prioritizes tiny-valued dimensions; (2) FPS in `train_vae.py:62` operates on all 14D without normalization, making scale variation invisible to the sampling criterion (vs `AutoEncoder.encode()` which uses XYZ-only FPS). Potential fixes: per-dimension normalization, per-dimension loss weighting, or XYZ-only FPS in preprocessing. Defer until after full pipeline validation.
 
 - **Verdict**: VAE training successful. Latent space is well-structured (low KL, good reconstruction). Ready to proceed with DiT training.
 
