@@ -19,6 +19,7 @@ shuffle_buffer_size: 1000
 # Point cloud parameters (for Gaussian Splatting)
 point_cloud_size: 4096
 n_views: 1  # Number of camera views to use
+use_stereo: false  # false = mono (matches original GWM paper), true = stereo pair
 
 # Data processing
 augment: false  # Temporarily disabled for compatibility

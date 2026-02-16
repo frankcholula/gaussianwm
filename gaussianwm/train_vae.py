@@ -47,13 +47,17 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, los
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         left = TensorUtils.to_device(TensorUtils.to_float(batch[0]), device)
-        right = TensorUtils.to_device(TensorUtils.to_float(batch[1]), device)
-
         left = einops.rearrange(left, 'b t h w c -> (b t) c h w')
-        right = einops.rearrange(right, 'b t h w c -> (b t) c h w')
+
+        if cfg.dataset.use_stereo:
+            right = TensorUtils.to_device(TensorUtils.to_float(batch[1]), device)
+            right = einops.rearrange(right, 'b t h w c -> (b t) c h w')
+            splatt3r_inputs = (left, right)
+        else:
+            splatt3r_inputs = (left,)
 
         with torch.no_grad():
-            points, _ = splatt3r.forward_tensor(left, right)
+            points, _ = splatt3r.forward_tensor(*splatt3r_inputs)
 
         SH_C0 = 0.28209479177387814
         colors = 0.5 + SH_C0 * points[..., -4:-1]
@@ -127,13 +131,17 @@ def evaluate(model, data_loader, device, cfg, splatt3r=None):
 
     for batch in tqdm(metric_logger.log_every(data_loader, 50, header), desc="Evaluation"):
         left = TensorUtils.to_device(TensorUtils.to_float(batch[0]), device)
-        right = TensorUtils.to_device(TensorUtils.to_float(batch[1]), device)
-
         left = einops.rearrange(left, 'b t h w c -> (b t) c h w')
-        right = einops.rearrange(right, 'b t h w c -> (b t) c h w')
+
+        if cfg.dataset.use_stereo:
+            right = TensorUtils.to_device(TensorUtils.to_float(batch[1]), device)
+            right = einops.rearrange(right, 'b t h w c -> (b t) c h w')
+            splatt3r_inputs = (left, right)
+        else:
+            splatt3r_inputs = (left,)
 
         with torch.no_grad():
-            points, _ = splatt3r.forward_tensor(left, right)
+            points, _ = splatt3r.forward_tensor(*splatt3r_inputs)
 
         SH_C0 = 0.28209479177387814
         colors = 0.5 + SH_C0 * points[..., -4:-1]
@@ -176,6 +184,10 @@ def evaluate(model, data_loader, device, cfg, splatt3r=None):
 @hydra.main(version_base=None, config_path="../configs", config_name="train_vae")
 def main(cfg: DictConfig):
     cfg.distributed.distributed = cfg.distributed.world_size > 1
+
+    mode_suffix = "stereo" if cfg.dataset.use_stereo else "mono"
+    cfg.output_dir = cfg.output_dir.rstrip("/") + f"_{mode_suffix}/"
+    cfg.log_dir = cfg.log_dir.rstrip("/") + f"_{mode_suffix}/"
 
     if cfg.output_dir:
         Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
