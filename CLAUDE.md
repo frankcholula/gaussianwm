@@ -187,14 +187,91 @@ Goal: reproduce Splatt3r point cloud reconstruction through an AE, then a VAE, b
 
 - **Verdict**: VAE training successful. Latent space is well-structured (low KL, good reconstruction). Ready to proceed with DiT training.
 
-### Next steps: DiT training + policy extraction
+### Paper's Training Paradigm (discovered via code + paper analysis)
 
-#### DiT PoC training
-- **Script**: `gaussianwm/train_diffusion.py` with config `configs/train_gwm.yaml`
-- **Architecture**: `GaussianPredictor` in `gwm_predictor.py` orchestrates Splatt3r + VAE + DiT + reward model
-- **Key integration**: `_process_obs()` converts RGB images → Splatt3r point clouds → VAE latents → DiT input
-- **Prerequisites**: `gwm_predictor.py` needs updates to integrate the pretrained VAE properly (checkpoint loading, freeze VAE weights, SH preprocessing, FPS downsampling, stereo pair support, VAE encode return value fix)
-- **DiT config**: `configs/world_model/gwm.yaml` — DiT-S/2, 384 hidden, 12 layers, EDM diffusion with Karras sampler
+The original GWM paper uses a **two-phase approach** (not purely two-stage or purely joint):
+
+1. **Phase 1: VAE pretraining** (200 epochs) — `train_vae.py` with `configs/train_vae.yaml`
+   - Model: `ae_d64_m64` (deterministic AE, `use_kl: false`), batch_size=16, 4 GPUs
+   - Purpose: warm-start the latent space so DiT doesn't train against random encodings
+2. **Phase 2: Joint VAE+DiT training** (1M steps) — `train_diffusion.py` with `configs/train_gwm.yaml`
+   - Loads pretrained VAE via `pretrained_model_path` in `gwm.yaml:95`
+   - `train.update_tokenizer: true` — VAE continues to be fine-tuned alongside DiT
+   - Separate optimizers: `tok_lr` (VAE), `model_lr` (DiT), `reward_model_lr`
+   - Dreamer-style motivation: joint training shapes the latent space for both reconstruction AND prediction
+
+**Mono vs stereo**: The paper uses a **single Realsense D435i camera** (mono mode). Splatt3r receives the same image duplicated for both views internally (`regressor.py:568`). On the `reproduce` branch, we added a `use_stereo` toggle in `configs/dataset/droid.yaml` to support both modes.
+
+### Known Gaps in the Codebase
+
+#### 1. `train_diffusion.py` has no eval loop
+- Config defines `eval.eval_every: 1000` but it's **never used** in the training loop
+- Only trains + saves checkpoints — no validation loss, no rollouts during training
+
+#### 2. `train_diffusion.py` batch unpacking bug
+- Dataset yields 4-tuple `(left, right, action, reward)` after Bug 2 fix
+- `gwm_predictor.py:199-203` interprets 4-item batch as `(obs, action, reward, pad_mask)` — right_frames get treated as actions
+- **Symptom**: `RuntimeError: mat1 and mat2 shapes cannot be multiplied (65536x3 and 10x384)`
+- Fix: update batch unpacking + add mono/stereo handling
+
+#### 3. Missing SH preprocessing in `gwm_predictor.py`
+- `train_vae.py:60-62` converts SH→RGB: `colors = 0.5 + C0 * points[..., -4:-1]; points[..., -4:-1] = colors / 255.0`
+- `gwm_predictor._process_obs()` at line 176 passes raw Splatt3r output to VAE **without** this conversion
+- Would cause VAE to receive differently-scaled color values vs what it was pretrained on
+
+#### 4. GS-mode evaluation pipeline not connected
+- `demo.py` and `gwm_predictor.rollout()` return **latent representations** when `use_gs=True`
+- `demo.py:105` takes last 3 channels as RGB — only works for pixel mode (`use_gs=False`)
+- **Missing steps for GS mode**:
+  1. VAE decode: latent → Gaussian params (2048 × 14D) — `vae.decode()` exists but never called in eval
+  2. Camera parameters: `_process_obs()` discards them (`points, _ = splatt3r.forward_tensor(...)`)
+  3. CUDA rasterizer: `render_cuda()` in `third_party/splatt3r/src/pixelsplat_src/cuda_splatting.py` exists but not wired to eval
+- **Result**: running demo in GS mode would produce colorful noise (latent values interpreted as pixel RGB), not meaningful video
+
+#### 5. FPS downsampling missing in `gwm_predictor._process_obs()`
+- `train_vae.py:64` does `points, _ = fps(points, K=cfg.model.point_cloud_size)` before encoding
+- `_process_obs()` passes full Splatt3r output (potentially 4096+ points) directly to VAE
+- VAE expects exactly `num_inputs=2048` points — would crash with assertion error
+
+### Next steps: Joint training (faithful reproduction)
+
+#### Phase 1: Fix bugs for joint training
+- Fix batch unpacking in `gwm_predictor.py` for 4-tuple dataset format
+- Add SH preprocessing to `_process_obs()`
+- Add FPS downsampling to `_process_obs()`
+- Add mono/stereo support to `_process_obs()` (use `use_stereo` config toggle)
+
+#### Phase 2: Wire up GS evaluation pipeline (latent → video)
+
+The current `demo.py` only works for pixel mode (`use_gs=False`). For GS mode, the rollout returns latent splats, not RGB. There are 4 missing steps to go from latent → rendered video:
+
+1. **Reshape grid → tokens** — Inverse of `_process_obs()` reshape at `gwm_predictor.py:183`
+   - Current: latent stored as `[B, latent_dim, nh, nw]` spatial grid
+   - Need: `latent.permute(0, 2, 3, 1).reshape(B, N, latent_dim)` to get `[B, N, latent_dim]` tokens
+   - Where: add to `rollout()` or a new `_decode_latent()` helper in `gwm_predictor.py`
+
+2. **VAE decode** — `vae.decode()` exists in `encoder/models_ae.py` but never called in eval
+   - Call: `gaussian_params = self.vae.decode(latent_tokens)` → `[B, 2048, 14]`
+   - The 14D output contains: xyz (3), scales (3), rotations (4), RGB colors (3), opacity (1)
+   - Note: colors are in preprocessed RGB space (not raw SH), since VAE was trained on preprocessed points
+
+3. **Save camera parameters** — Currently discarded at `_process_obs()` line 176
+   - `points, _ = self.splatt3r.forward_tensor(obs_flat)` — the `_` contains camera info
+   - Fix: `points, camera_info = self.splatt3r.forward_tensor(obs_flat)` and store `camera_info`
+   - Only need camera from the initial observation (save once, reuse for all predicted frames)
+   - Extract extrinsics + intrinsics from `camera_info` for the rasterizer
+
+4. **CUDA rasterizer** — `render_cuda()` in `third_party/splatt3r/src/pixelsplat_src/cuda_splatting.py`
+   - Parse 14D Gaussian params into: means, covariances, SH coefficients, opacities
+   - Call: `render_cuda(extrinsics, intrinsics, near, far, image_shape, bg_color, means, covs, sh, opacities)`
+   - Returns: RGB image `[H, W, 3]` rendered from the saved camera viewpoint
+   - Alternative: may need to convert preprocessed RGB back to SH format for the rasterizer, or modify render call to accept direct colors
+
+5. **Stitch frames → video** — Already works via `imageio.mimsave()` in `demo.py:44`
+
+**Implementation location**: Best approach is a new method `_latent_to_rgb()` in `GaussianPredictor` that wraps steps 1-4, callable from both `rollout()` and `demo.py`.
+
+**Eval loop in `train_diffusion.py`**: Config already defines `eval.eval_every: 1000` (line 40 in `train_gwm.yaml`). Need to add eval block in the training loop that calls `model.rollout()` + `_latent_to_rgb()` on val data, computes PSNR/SSIM/LPIPS vs GT frames, and optionally saves sample videos.
 
 #### Policy extraction
 - `gwm_predictor.rollout()` is the policy integration point — takes a `policy(obs, t) → action` callable and rolls out the world model autoregressively
@@ -205,6 +282,7 @@ Goal: reproduce Splatt3r point cloud reconstruction through an AE, then a VAE, b
   3. **Inverse dynamics**: Train action predictor on (s_t, s_{t+1}) pairs from dataset
 
 #### Benchmarks and evaluation
-- **World model quality**: Reconstruction MSE (point cloud space), FVD on predicted sequences, per-dimension Gaussian parameter accuracy
+- **World model quality**: Reconstruction MSE (point cloud space), rendered image metrics (PSNR/SSIM/LPIPS), FVD on predicted video sequences
+- **Video generation**: Predicted latents → VAE decode → Gaussian params → CUDA rasterizer → RGB frames → MP4/GIF
 - **Policy quality** (once policy exists): Task success rate on DROID manipulation tasks, action prediction MSE vs expert
 - **Computational**: Inference latency per rollout step, GPU memory footprint
