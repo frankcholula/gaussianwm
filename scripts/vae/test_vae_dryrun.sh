@@ -6,8 +6,6 @@ set -e
 export CUDA_VISIBLE_DEVICES=0
 export OMP_NUM_THREADS=4
 
-source .venv/bin/activate
-
 python gaussianwm/train_vae.py \
     --config-name=train_vae_single_gpu \
     train.batch_size=4 \
