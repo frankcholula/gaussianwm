@@ -1,5 +1,6 @@
 IMAGE_NAME := gwm
 IMAGE_TAG := latest
+DOCKERHUB_USER := frankcholula
 CONTAINER_NAME := gwm-container
 GPUS ?= all
 CUDA_ARCHS ?= 8.0;8.6
@@ -25,7 +26,7 @@ DOCKER_RUN_FLAGS := --rm --gpus $(GPUS) \
 	-e WANDB_API_KEY \
 	-e GWM_PATH=/app
 
-.PHONY: build run shell test clean
+.PHONY: build run shell test clean push
 
 build:
 	docker build --build-arg CUDA_ARCHS="$(CUDA_ARCHS)" -t $(IMAGE_NAME):$(IMAGE_TAG) .
@@ -36,6 +37,10 @@ run:
 
 test:
 	docker run $(DOCKER_RUN_FLAGS) $(IMAGE_NAME):$(IMAGE_TAG) python tests/test_install.py
+
+push:
+	docker tag $(IMAGE_NAME):$(IMAGE_TAG) $(DOCKERHUB_USER)/$(IMAGE_NAME):$(IMAGE_TAG)
+	docker push $(DOCKERHUB_USER)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
