@@ -168,7 +168,7 @@ class GaussianPredictor(nn.Module):
         """Convert RGB obs to latent embeddings with Gaussian processing (batched version)"""
         B, T, C, H, W = obs.shape
         embeddings = None
-        
+
         if self.args.observation.use_gs:
             with torch.no_grad():
                 obs_flat = obs.view(B*T, C, H, W)
