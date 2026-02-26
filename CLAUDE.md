@@ -43,8 +43,8 @@ CUDA_VISIBLE_DEVICES=1,2,3,4 torchrun --nproc_per_node=4 --master_port 12345 \
 ## Architecture
 
 **Two-stage training pipeline:**
-1. **VAE stage**: Images → Splatt3r (3D Gaussian points) → 3D Autoencoder → latent codes
-2. **DiT stage**: Latent codes + actions → Diffusion Transformer → predicted future latents → decoded → rendered via Gaussian splatting
+1. **VAE stage** (optional): Images → Splatt3r (3D Gaussian points) → 3D Autoencoder → latent codes (2048 points via FPS downsampling)
+2. **DiT stage**: Gaussian features + actions → Diffusion Transformer → predicted future Gaussians → SH→RGB extraction (NOT full Gaussian splatting rendering)
 
 **Key modules in `gaussianwm/`:**
 - `gwm_predictor.py` — Orchestrator: ties together Splatt3r, VAE, DiT, and reward model
@@ -75,4 +75,21 @@ Gaussian point clouds use 14 dimensions per point:
 
 **Total: 3 + 3 + 4 + 3 + 1 = 14 dimensions per point**
 
-Default point cloud size is 2048 points (after FPS downsampling). DROID dataset uses RLDS format with action dim 10.
+**Point cloud representation:**
+- **DiT training/inference** (`use_vae=false`, default): 16,384 Gaussians (128×128 grid, one per pixel, no downsampling)
+  - Stored as `[14, 128, 128]` tensor (channels × height × width)
+  - Splatt3r produces one Gaussian per pixel from 128×128 input images
+  - The model operates on this dense grid without FPS downsampling
+- **VAE training** (`use_vae=true`): 2048 or 4096 Gaussians (FPS downsampled point cloud)
+  - Stored as `[N, 14]` tensor where N = `point_cloud_size` from config
+  - Used only if training the optional 3D autoencoder stage
+
+**Evaluation methodology:**
+- **Training loss**: Computed on all 14 Gaussian dimensions (including XYZ geometry)
+- **Inference evaluation**: Extracts only SH color channels (dims 10-13) via `rollout_obs[:, :, -3:]`
+  - XYZ positions, scales, rotations, and opacity are predicted but NOT used for visualization
+  - Colors are converted to RGB via `RGB = 0.5 + C0 * SH_DC` where C0=0.28209...
+  - No Gaussian splatting rasterization is performed; the 3D structure is not utilized at test time
+  - See `demo.py:103-105` for the official evaluation implementation
+
+DROID dataset uses RLDS format with action dim 10 (xyz translation + rot6d rotation + gripper state).
