@@ -177,16 +177,16 @@ def main(cfg: DictConfig):
         
         if is_main_process and step % cfg.train.save_every == 0 and step > 0:
             logger.info(f"Saving model checkpoint at step {step}")
-            # checkpoint_dir = work_dir / "checkpoints"
             checkpoint_dir = Path(cfg.output_dir) / "checkpoints"
-            checkpoint_dir.mkdir(exist_ok=True)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
             model_to_save = model.module if cfg.distributed.distributed else model
             model_to_save.save_snapshot(checkpoint_dir, suffix=f"_{step}")
             model_to_save.save_snapshot(checkpoint_dir, suffix="_latest")
-    
+
     logger.info("Saving final model")
+    checkpoint_dir = Path(cfg.output_dir) / "checkpoints"
     final_dir = checkpoint_dir / "final"
-    final_dir.mkdir(exist_ok=True)
+    final_dir.mkdir(parents=True, exist_ok=True)
     model_to_save = model.module if cfg.distributed.distributed else model
     model_to_save.save_snapshot(final_dir)
     

@@ -30,15 +30,16 @@ from util.distributed_utils import NativeScalerWithGradNormCount as NativeScaler
 
 
 def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, loss_scaler,
-                    max_norm=0, log_writer=None, cfg=None, splatt3r=None):
+                    max_norm=0, log_writer=None, cfg=None):
     model.train()
     metric_logger = distributed_utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', distributed_utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = f'Epoch: [{epoch}]'
     print_freq = 20
 
+    splatt3r = Splatt3rRegressor().to(device)
     accum_iter = cfg.train.accum_iter
-    kl_weight = cfg.train.get('kl_weight', 1e-3)
+    kl_weight = 1e-3
 
     optimizer.zero_grad()
 
@@ -46,18 +47,15 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, los
         cprint(f'log_dir: {log_writer.log_dir}', 'green')
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-        left = TensorUtils.to_device(TensorUtils.to_float(batch[0]), device)
-        left = einops.rearrange(left, 'b t h w c -> (b t) c h w')
+        obs = batch[0]
 
-        if cfg.dataset.use_stereo:
-            right = TensorUtils.to_device(TensorUtils.to_float(batch[1]), device)
-            right = einops.rearrange(right, 'b t h w c -> (b t) c h w')
-            splatt3r_inputs = (left, right)
-        else:
-            splatt3r_inputs = (left,)
+        image1 = obs
+        image1 = TensorUtils.to_device(TensorUtils.to_float(image1), device)
+
+        image1 = einops.rearrange(image1, 'b t h w c -> (b t) c h w')
 
         with torch.no_grad():
-            points, _ = splatt3r.forward_tensor(*splatt3r_inputs)
+            points, _ = splatt3r.forward_tensor(image1)
 
         SH_C0 = 0.28209479177387814
         colors = 0.5 + SH_C0 * points[..., -4:-1]
@@ -122,26 +120,23 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, los
 
 
 @torch.no_grad()
-def evaluate(model, data_loader, device, cfg, splatt3r=None):
+def evaluate(model, data_loader, device, cfg):
     model.eval()
     criterion = torch.nn.MSELoss()
+    splatt3r = Splatt3rRegressor().to(device)
 
     metric_logger = distributed_utils.MetricLogger(delimiter="  ")
     header = 'Eval:'
 
     for batch in tqdm(metric_logger.log_every(data_loader, 50, header), desc="Evaluation"):
-        left = TensorUtils.to_device(TensorUtils.to_float(batch[0]), device)
-        left = einops.rearrange(left, 'b t h w c -> (b t) c h w')
+        obs = batch[0]
 
-        if cfg.dataset.use_stereo:
-            right = TensorUtils.to_device(TensorUtils.to_float(batch[1]), device)
-            right = einops.rearrange(right, 'b t h w c -> (b t) c h w')
-            splatt3r_inputs = (left, right)
-        else:
-            splatt3r_inputs = (left,)
+        image1 = obs
+        image1 = TensorUtils.to_device(TensorUtils.to_float(image1), device)
+        image1 = einops.rearrange(image1, 'b t h w c -> (b t) c h w')
 
         with torch.no_grad():
-            points, _ = splatt3r.forward_tensor(*splatt3r_inputs)
+            points, _ = splatt3r.forward_tensor(image1)
 
         SH_C0 = 0.28209479177387814
         colors = 0.5 + SH_C0 * points[..., -4:-1]
@@ -184,10 +179,6 @@ def evaluate(model, data_loader, device, cfg, splatt3r=None):
 @hydra.main(version_base=None, config_path="../configs", config_name="train_vae")
 def main(cfg: DictConfig):
     cfg.distributed.distributed = cfg.distributed.world_size > 1
-
-    mode_suffix = "stereo" if cfg.dataset.use_stereo else "mono"
-    cfg.output_dir = cfg.output_dir.rstrip("/") + f"_{mode_suffix}/"
-    cfg.log_dir = cfg.log_dir.rstrip("/") + f"_{mode_suffix}/"
 
     if cfg.output_dir:
         Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
@@ -281,11 +272,8 @@ def main(cfg: DictConfig):
 
     distributed_utils.load_model(args=cfg, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
-    splatt3r = Splatt3rRegressor().to(device)
-    splatt3r.eval()
-
     if cfg.eval_only:
-        test_stats = evaluate(model, data_loader_val, device, cfg, splatt3r=splatt3r)
+        test_stats = evaluate(model, data_loader_val, device, cfg)
         logger.info(f"Eval loss on {len(dataset_val)} test samples: {test_stats['loss']:.6f}")
         return
 
@@ -298,11 +286,10 @@ def main(cfg: DictConfig):
             optimizer, device, epoch, loss_scaler,
             cfg.optimizer.clip_grad,
             log_writer=log_writer,
-            cfg=cfg,
-            splatt3r=splatt3r
+            cfg=cfg
         )
 
-        if cfg.output_dir and (epoch % 5 == 0 or epoch + 1 == cfg.train.epochs):
+        if cfg.output_dir and (epoch % 10 == 0 or epoch + 1 == cfg.train.epochs):
             distributed_utils.save_model(
                 args=cfg, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)

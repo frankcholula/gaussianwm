@@ -593,8 +593,8 @@ class Splatt3rRegressor(nn.Module):
         
         return pred1, pred2
 
-    def forward_tensor(self, *image_tensors: torch.Tensor) -> torch.Tensor:
-        pred1, pred2 = self.forward(*image_tensors)
+    def forward_tensor(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        pred1, pred2 = self.forward(image_tensor)
         return get_gaussain_tensor(pred1), get_gaussain_tensor(pred2)
 
 if __name__ == "__main__":
