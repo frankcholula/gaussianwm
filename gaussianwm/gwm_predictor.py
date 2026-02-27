@@ -66,6 +66,7 @@ class GaussianPredictor(nn.Module):
             sigma_data=args.diffusion.sigma_data,
             sigma_offset_noise=args.diffusion.sigma_offset_noise,
             noise_previous_obs=args.diffusion.noise_previous_obs,
+            quantize_output=not args.observation.use_gs,
         )
         reward_model_config = RewardModelConfig(
                 lstm_dim=args.model.hidden_size,

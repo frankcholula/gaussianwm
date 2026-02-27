@@ -38,6 +38,7 @@ class DenoiserConfig:
     sigma_data: float
     sigma_offset_noise: float
     noise_previous_obs: bool
+    quantize_output: bool = True
     upsampling_factor: Optional[int] = None
 
 
@@ -182,8 +183,9 @@ class Denoiser(nn.Module):
     @torch.no_grad()
     def wrap_model_output(self, noisy_next_obs: Tensor, model_output: Tensor, cs: Conditioners) -> Tensor:
         d = cs.c_skip * noisy_next_obs + cs.c_out * model_output
-        # Quantize to {0, ..., 255}, then back to [-1, 1]
-        d = d.clamp(-1, 1).add(1).div(2).mul(255).byte().div(255).mul(2).sub(1)
+        if self.cfg.quantize_output:
+            # Pixel-space / VQ-VAE only: quantize to {0,...,255} then back to [-1,1]
+            d = d.clamp(-1, 1).add(1).div(2).mul(255).byte().div(255).mul(2).sub(1)
         return d
     
     @torch.no_grad()
