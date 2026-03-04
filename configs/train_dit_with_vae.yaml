@@ -45,7 +45,7 @@ eval:
 # Logging and checkpointing
 output_dir: logs/gwm_vae
 log_dir: logs/gwm_vae
-use_wandb: false
+use_wandb: true
 wandb:
   project: gaussianwm
   name: null
@@ -65,7 +65,8 @@ world_model:
     num_latents: 512          # M — matches paper (16×32 grid)
     latent_dim: 64
     vae_depth: 4
-    use_kl: false
+    use_kl: true
+    kl_weight: 1e-3              # matches train_vae_single_gpu.yaml
     commit_weight: 0.25
   reward:
     use_reward_model: false
