@@ -8,7 +8,6 @@ import torch.nn.functional as F
 
 from einops import rearrange, repeat
 
-# from torch_cluster import fps
 from pytorch3d.ops import sample_farthest_points as fps
 
 from timm.models.layers import DropPath
@@ -337,27 +336,14 @@ class KLAutoEncoder(nn.Module):
         self.logvar_fc = nn.Linear(dim, latent_dim)
 
     def encode(self, pc):
-        # pc: B x N x 3
+        # pc: B x N x D (D=14: xyz + features)
         B, N, D = pc.shape
         assert N == self.num_inputs
-        
-        ###### fps
-        flattened = pc.view(B*N, D)
 
-        batch = torch.arange(B).to(pc.device)
-        batch = torch.repeat_interleave(batch, N)
-
-        pos = flattened
-
-        ratio = 1.0 * self.num_latents / self.num_inputs
-        
-        K = int(N * ratio)
-        batch_tensor = batch.view(-1, 1).repeat(1, 3)
-        _, idx = fps(pos.unsqueeze(0), K=K)
-        idx = idx.squeeze(0)
-        
-        sampled_pc = pos[idx]
-        sampled_pc = sampled_pc.view(B, -1, 3)
+        ###### FPS sampling based on XYZ coordinates
+        _, sampled_indices = fps(pc[..., :3], K=self.num_latents)
+        sampled_pc = torch.gather(pc, 1,
+            sampled_indices.unsqueeze(-1).expand(-1, -1, D))  # [B, num_latents, D]
         ######
 
         sampled_pc_embeddings = self.point_embed(sampled_pc)
@@ -434,53 +420,53 @@ def create_autoencoder(
     return model
 
 def kl_d512_m512_l512(N=2048):
-    return create_autoencoder(dim=512, M=512, latent_dim=512, N=N, determinisitc=False)
+    return create_autoencoder(dim=512, M=512, latent_dim=512, N=N, deterministic=False)
     
 def kl_d512_m512_l64(N=2048):
-    return create_autoencoder(dim=512, M=512, latent_dim=64, N=N, determinisitc=False)
+    return create_autoencoder(dim=512, M=512, latent_dim=64, N=N, deterministic=False)
 
 def kl_d512_m512_l32(N=2048):
-    return create_autoencoder(dim=512, M=512, latent_dim=32, N=N, determinisitc=False)
+    return create_autoencoder(dim=512, M=512, latent_dim=32, N=N, deterministic=False)
 
 def kl_d512_m512_l16(N=2048):
-    return create_autoencoder(dim=512, M=512, latent_dim=16, N=N, determinisitc=False)
+    return create_autoencoder(dim=512, M=512, latent_dim=16, N=N, deterministic=False)
 
 def kl_d512_m512_l8(N=2048):
-    return create_autoencoder(dim=512, M=512, latent_dim=8, N=N, determinisitc=False)
+    return create_autoencoder(dim=512, M=512, latent_dim=8, N=N, deterministic=False)
 
 def kl_d512_m512_l4(N=2048):
-    return create_autoencoder(dim=512, M=512, latent_dim=4, N=N, determinisitc=False)
+    return create_autoencoder(dim=512, M=512, latent_dim=4, N=N, deterministic=False)
 
 def kl_d512_m512_l2(N=2048):
-    return create_autoencoder(dim=512, M=512, latent_dim=2, N=N, determinisitc=False)
+    return create_autoencoder(dim=512, M=512, latent_dim=2, N=N, deterministic=False)
 
 def kl_d512_m512_l1(N=2048):
-    return create_autoencoder(dim=512, M=512, latent_dim=1, N=N, determinisitc=False)
+    return create_autoencoder(dim=512, M=512, latent_dim=1, N=N, deterministic=False)
 
 ###
 def ae_d512_m512(N=2048):
-    return create_autoencoder(dim=512, M=512, N=N, determinisitc=True)
+    return create_autoencoder(dim=512, M=512, N=N, deterministic=True)
 
 def ae_d512_m256(N=2048):
-    return create_autoencoder(dim=512, M=256, N=N, determinisitc=True)
+    return create_autoencoder(dim=512, M=256, N=N, deterministic=True)
 
 def ae_d512_m128(N=2048):
-    return create_autoencoder(dim=512, M=128, N=N, determinisitc=True)
+    return create_autoencoder(dim=512, M=128, N=N, deterministic=True)
 
 def ae_d512_m64(N=2048):
-    return create_autoencoder(dim=512, M=64, N=N, determinisitc=True)
+    return create_autoencoder(dim=512, M=64, N=N, deterministic=True)
 
 ###
 def ae_d256_m512(N=2048):
-    return create_autoencoder(dim=256, M=512, N=N, determinisitc=True)
+    return create_autoencoder(dim=256, M=512, N=N, deterministic=True)
 
 def ae_d128_m512(N=2048):
-    return create_autoencoder(dim=128, M=512, N=N, determinisitc=True)
+    return create_autoencoder(dim=128, M=512, N=N, deterministic=True)
 
 def ae_d64_m512(N=2048):
-    return create_autoencoder(dim=64, M=512, N=N, determinisitc=True)
+    return create_autoencoder(dim=64, M=512, N=N, deterministic=True)
 
 # low-resolution autoencoder
 def ae_d64_m64(N=2048):
-    return create_autoencoder(dim=128, M=128, depth=4, output_dim=3, N=N, determinisitc=True)
+    return create_autoencoder(dim=128, M=128, depth=4, output_dim=3, N=N, deterministic=True)
 

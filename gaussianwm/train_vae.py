@@ -49,7 +49,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, los
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         obs = batch[0]
 
-        image1 = obs
+        image1, _ = obs
         image1 = TensorUtils.to_device(TensorUtils.to_float(image1), device)
 
         image1 = einops.rearrange(image1, 'b t h w c -> (b t) c h w')
@@ -131,10 +131,9 @@ def evaluate(model, data_loader, device, cfg):
     for batch in tqdm(metric_logger.log_every(data_loader, 50, header), desc="Evaluation"):
         obs = batch[0]
 
-        image1, image2 = obs['robot0_agentview_left_image'], obs['robot0_agentview_right_image']
+        image1, image2 = obs
         image1 = TensorUtils.to_device(TensorUtils.to_float(image1), device)
         image2 = TensorUtils.to_device(TensorUtils.to_float(image2), device)
-
         image1 = einops.rearrange(image1, 'b t h w c -> (b t) c h w')
         image2 = einops.rearrange(image2, 'b t h w c -> (b t) c h w')
 
