@@ -1,0 +1,71 @@
+# @package _global_
+defaults:
+  - world_model: gwm
+  - dataset: droid
+  - _self_          # _self_ last → these values override the loaded packages
+
+# General settings
+seed: 42
+device: cuda
+
+# Dataloader settings
+dataloader:
+  num_workers: 0
+  pin_memory: false
+
+# Distributed training settings
+distributed:
+  rank: null
+  gpu: null
+  distributed: false
+  world_size: 1
+  local_rank: -1
+  dist_on_itp: false
+  dist_backend: nccl
+  dist_url: env://
+  dist_eval: false
+
+# Training settings
+train:
+  max_steps: 1000000
+  log_every: 10
+  save_every: 10000
+  update_tokenizer: true
+  update_model: true
+  batch_accumulation: 1
+
+# Evaluation settings
+eval:
+  eval_every: 1000
+  num_rollout_batches: 10
+  save_rollouts: true
+  rollout_horizon: 8
+  save_max_samples: 1
+
+# Logging and checkpointing
+output_dir: logs/gwm_vae
+log_dir: logs/gwm_vae
+use_wandb: false
+wandb:
+  project: gaussianwm
+  name: null
+
+# Resume training
+resume: null
+start_step: 0
+
+# VAE+DiT overrides (paper-consistent, arXiv 2508.17600).
+# DiT sees [B, T, 64, 16, 32] latents (512 = 16×32 rectangular grid).
+world_model:
+  observation:
+    use_gs: true
+    point_cloud_size: 2048    # N — matches paper
+  vae:
+    use_vae: true
+    num_latents: 512          # M — matches paper (16×32 grid)
+    latent_dim: 64
+    vae_depth: 4
+    use_kl: false
+    commit_weight: 0.25
+  reward:
+    use_reward_model: false

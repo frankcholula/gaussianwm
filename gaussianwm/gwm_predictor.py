@@ -109,14 +109,17 @@ class GaussianPredictor(nn.Module):
                 reward_model_config.img_channels = 14
         if args.vae.use_vae:
             denoiser_config.inner_model.in_channels = args.vae.latent_dim
-            denoiser_config.inner_model.input_size = args.vae.num_latents
             denoiser_config.inner_model.patch_size = 1
-            
+
             # Pre-compute spatial dimensions for reshaping when using VAE
-            self.nh = int(math.sqrt(args.vae.num_latents))
-            self.nw = self.nh  # Assuming square spatial dimensions
-            # Update input_size to spatial dimensions
-            denoiser_config.inner_model.input_size = self.nh
+            # Find closest rectangular factorization of num_latents
+            M = args.vae.num_latents
+            self.nh = int(math.sqrt(M))
+            while M % self.nh != 0:
+                self.nh -= 1
+            self.nw = M // self.nh
+            # Update input_size to spatial dimensions (supports rectangular grids)
+            denoiser_config.inner_model.input_size = (self.nh, self.nw)
 
             if args.reward.use_reward_model:
                 reward_model_config.img_size = self.nh
@@ -231,7 +234,7 @@ class GaussianPredictor(nn.Module):
         # VAE reconstruction
         # z, _, commit_loss = self.vae.encode(points)
         z = self.vae.encode(points) # e.g., [160, 512, 256]
-        recon = self.vae.decode(z) #queries=points)
+        recon = self.vae.decode(z, queries=points)
         
         # Reconstruction loss on Gaussian parameters
         recon_loss = F.mse_loss(recon, points)
@@ -326,8 +329,8 @@ class GaussianPredictor(nn.Module):
 
             # VAE reconstruction
             z = self.vae.encode(points)
-            recon = self.vae.decode(z)
-            
+            recon = self.vae.decode(z, queries=points)
+
             # Reconstruction loss on Gaussian parameters
             recon_loss = F.mse_loss(recon, points)
             vae_loss = recon_loss
