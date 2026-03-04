@@ -8,7 +8,6 @@ import torch.nn.functional as F
 
 from einops import rearrange, repeat
 
-# from torch_cluster import fps
 from pytorch3d.ops import sample_farthest_points as fps
 
 from timm.models.layers import DropPath
