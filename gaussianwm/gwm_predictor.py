@@ -182,7 +182,7 @@ class GaussianPredictor(nn.Module):
             if self.args.vae.use_vae:   # Get latent representation
                 enc = self.vae.encode(points)
                 if isinstance(enc, tuple):
-                    enc = enc[0]  # [B, T, N, C]
+                    enc = enc[1]  # KLAutoEncoder returns (kl, z); take z
                 enc = enc.view(B, T, -1, enc.shape[-1])
                 embeddings = enc.permute(0, 1, 3, 2).contiguous().view(B, T, enc.shape[-1], self.nh, self.nw)
                 # [B, T, C, H, W]
@@ -232,14 +232,19 @@ class GaussianPredictor(nn.Module):
             # points = torch.cat([points_1, points_2], dim=1)
 
         # VAE reconstruction
-        # z, _, commit_loss = self.vae.encode(points)
-        z = self.vae.encode(points) # e.g., [160, 512, 256]
+        enc = self.vae.encode(points)
+        if isinstance(enc, tuple):
+            kl_loss, z = enc  # KLAutoEncoder returns (kl, z)
+            kl_loss = kl_loss.mean()
+        else:
+            z = enc
+            kl_loss = torch.tensor(0.0, device=z.device)
         recon = self.vae.decode(z, queries=points)
-        
+
         # Reconstruction loss on Gaussian parameters
         recon_loss = F.mse_loss(recon, points)
-        # loss = recon_loss + args.commit_weight * commit_loss
-        loss = recon_loss
+        kl_weight = getattr(args.vae, 'kl_weight', 1e-3)
+        loss = recon_loss + kl_weight * kl_loss
 
         loss.backward()
         self.vae_optimizer.step()
@@ -247,7 +252,7 @@ class GaussianPredictor(nn.Module):
         return {
             'tokenizer_loss': loss.item(),
             'recon_loss': recon_loss.item(),
-            # 'commit_loss': commit_loss.item()
+            'kl_loss': kl_loss.item(),
         }
 
     def update_model(self, args, obs, action, reward, pad_mask=None):
@@ -328,17 +333,25 @@ class GaussianPredictor(nn.Module):
                 points, _ = self.splatt3r.forward_tensor(obs_flat)
 
             # VAE reconstruction
-            z = self.vae.encode(points)
+            enc = self.vae.encode(points)
+            if isinstance(enc, tuple):
+                kl_loss, z = enc
+                kl_loss = kl_loss.mean()
+            else:
+                z = enc
+                kl_loss = torch.tensor(0.0, device=z.device)
             recon = self.vae.decode(z, queries=points)
 
             # Reconstruction loss on Gaussian parameters
             recon_loss = F.mse_loss(recon, points)
-            vae_loss = recon_loss
+            kl_weight = getattr(self.args.vae, 'kl_weight', 1e-3)
+            vae_loss = recon_loss + kl_weight * kl_loss
             total_loss += vae_loss
-            
+
             metrics.update({
                 'tokenizer_loss': vae_loss.item(),
                 'recon_loss': recon_loss.item(),
+                'kl_loss': kl_loss.item(),
             })
 
         # Calculate model loss without optimization
