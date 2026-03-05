@@ -300,7 +300,7 @@ def main(cfg: DictConfig):
             cfg=cfg
         )
 
-        if cfg.output_dir and (epoch % 10 == 0 or epoch + 1 == cfg.train.epochs):
+        if cfg.output_dir and (epoch % cfg.train.save_every == 0 or epoch + 1 == cfg.train.epochs):
             distributed_utils.save_model(
                 args=cfg, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
