@@ -46,7 +46,10 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, los
     if log_writer is not None:
         cprint(f'log_dir: {log_writer.log_dir}', 'green')
 
+    epoch_steps = len(data_loader.dataset) // data_loader.batch_size
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+        if data_iter_step >= epoch_steps:
+            break
         obs = batch[0]
 
         image1, _ = obs
@@ -110,9 +113,12 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, los
 
         loss_value_reduce = distributed_utils.all_reduce_mean(loss_value)
         if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
-            epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
-            log_writer.add_scalar('loss', loss_value_reduce, epoch_1000x)
-            log_writer.add_scalar('lr', lr, epoch_1000x)
+            global_step = epoch * epoch_steps + data_iter_step
+            log_writer.add_scalar('loss', loss_value_reduce, global_step)
+            log_writer.add_scalar('lr', lr, global_step)
+            log_writer.add_scalar('recon_loss', loss_vol.item(), global_step)
+            if loss_kl is not None:
+                log_writer.add_scalar('kl_loss', loss_kl.item(), global_step)
 
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
@@ -128,7 +134,10 @@ def evaluate(model, data_loader, device, cfg):
     metric_logger = distributed_utils.MetricLogger(delimiter="  ")
     header = 'Eval:'
 
-    for batch in tqdm(metric_logger.log_every(data_loader, 50, header), desc="Evaluation"):
+    eval_steps = len(data_loader.dataset) // max(data_loader.batch_size, 1)
+    for eval_step, batch in enumerate(tqdm(metric_logger.log_every(data_loader, 50, header), desc="Evaluation")):
+        if eval_step >= eval_steps:
+            break
         obs = batch[0]
 
         image1, image2 = obs
