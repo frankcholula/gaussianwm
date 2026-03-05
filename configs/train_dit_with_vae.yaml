@@ -62,6 +62,8 @@ world_model:
     point_cloud_size: 2048    # N — matches paper
   vae:
     use_vae: true
+    checkpoint_path: null     # set to pretrained VAE .pth for staged training
+    freeze: false             # true = frozen VAE (stage 2), false = joint training
     num_latents: 512          # M — matches paper (16×32 grid)
     latent_dim: 64
     vae_depth: 4

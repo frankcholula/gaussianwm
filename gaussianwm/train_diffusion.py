@@ -49,7 +49,15 @@ def train_step(model, batch, optimizer, step, cfg):
     """Train for one step"""
     # [B, T, H, W, C] -> [B, T, C, H, W]
     batch = list(batch)
-    batch[0] = batch[0].permute(0, 1, 4, 2, 3).to(model.device)
+    # Unwrap DDP to access vae_optimizer
+    raw_model = model.module if isinstance(model, DDP) else model
+    batch[0] = batch[0].permute(0, 1, 4, 2, 3).to(raw_model.device)
+
+    vae_optimizer = getattr(raw_model, 'vae_optimizer', None)
+    vae_trainable = (cfg.train.update_tokenizer
+                     and cfg.world_model.vae.use_vae
+                     and not getattr(cfg.world_model.vae, 'freeze', False)
+                     and vae_optimizer is not None)
 
     total_loss, metrics = model(
         batch,
@@ -59,6 +67,9 @@ def train_step(model, batch, optimizer, step, cfg):
     total_loss.backward()
     optimizer.step()
     optimizer.zero_grad()
+    if vae_trainable:
+        vae_optimizer.step()
+        vae_optimizer.zero_grad()
     return metrics
 
 
