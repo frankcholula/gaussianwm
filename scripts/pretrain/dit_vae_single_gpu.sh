@@ -11,6 +11,7 @@ python gaussianwm/train_diffusion.py \
     dataset.data_path=$DATA_PATH \
     world_model.vae.checkpoint_path=$GWM_PATH/logs/vae_m512/checkpoint-19.pth \
     world_model.vae.freeze=true \
+    world_model.batch_size=8 \
     train.update_tokenizer=false \
     output_dir=$GWM_PATH/logs/gwm_vae \
     log_dir=$GWM_PATH/logs/gwm_vae \
