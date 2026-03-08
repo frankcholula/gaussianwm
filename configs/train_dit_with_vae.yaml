@@ -70,5 +70,7 @@ world_model:
     use_kl: true
     kl_weight: 1e-3              # matches train_vae_single_gpu.yaml
     commit_weight: 0.25
+  diffusion:
+    sigma_data: 1.0             # VAE latents have std≈1.0 (not pixel-space 0.5)
   reward:
     use_reward_model: false

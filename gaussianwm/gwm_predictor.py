@@ -207,9 +207,22 @@ class GaussianPredictor(nn.Module):
             return self._process_obs(obs)
         return obs
 
+    def _preprocess_sh(self, points):
+        """Apply SH→RGB preprocessing to match train_vae.py pipeline exactly.
+        Splatt3r must receive [0,255] images (no /255 before Splatt3r).
+        Then SH channels get: (0.5 + C0*SH) / 255.0
+        This matches train_vae.py lines 63-65.
+        """
+        SH_C0 = 0.28209479177387814
+        points = points.clone()
+        colors = 0.5 + SH_C0 * points[..., -4:-1]
+        points[..., -4:-1] = colors / 255.0
+        return points
+
     def _points_to_latent(self, points, B, T, H, W):
         """Convert Splatt3r point cloud to latent embeddings."""
         if self.args.vae.use_vae:
+            points = self._preprocess_sh(points)
             vae_frozen = getattr(self.args.vae, 'freeze', False)
             ctx = torch.no_grad() if vae_frozen else nullcontext()
             with ctx:
@@ -231,7 +244,9 @@ class GaussianPredictor(nn.Module):
         else:
             obs, action, reward, pad_mask = batch
             pad_mask = pad_mask.to(self.device)
-        obs = obs.to(self.device) / 255.    # [B, T, C, H, W]
+        obs = obs.to(self.device).float()
+        if not self.args.observation.use_gs:
+            obs = obs / 255.
         action = action.to(self.device)     # [B, T, A]
         reward = reward.to(self.device)     # [B, T]
         if self.args.symlog:
@@ -255,7 +270,9 @@ class GaussianPredictor(nn.Module):
         # Get Gaussian features from Splatt3r
         with torch.no_grad():
             points, _ = self.splatt3r.forward_tensor(obs_flat) # e.g., [160, 4096, 14]
-            # points = torch.cat([points_1, points_2], dim=1)
+
+        # Preprocess SH to match train_vae.py pipeline
+        points = self._preprocess_sh(points)
 
         # VAE reconstruction
         enc = self.vae.encode(points)
@@ -343,7 +360,9 @@ class GaussianPredictor(nn.Module):
         else:
             obs, action, reward, pad_mask = batch
             pad_mask = pad_mask.to(self.device)
-        obs = obs.to(self.device) / 255.    # [B, T, C, H, W]
+        obs = obs.to(self.device).float()
+        if not self.args.observation.use_gs:
+            obs = obs / 255.
         action = action.to(self.device)     # [B, T, A]
         reward = reward.to(self.device)     # [B, T]
         if self.args.symlog:
@@ -361,16 +380,17 @@ class GaussianPredictor(nn.Module):
 
         # VAE loss (only when VAE is trainable — skip if frozen)
         if update_tokenizer and self.args.vae.use_vae and not vae_frozen:
-            enc = self.vae.encode(cached_points)
+            vae_points = self._preprocess_sh(cached_points)
+            enc = self.vae.encode(vae_points)
             if isinstance(enc, tuple):
                 kl_loss, z = enc
                 kl_loss = kl_loss.mean()
             else:
                 z = enc
                 kl_loss = torch.tensor(0.0, device=z.device)
-            recon = self.vae.decode(z, queries=cached_points)
+            recon = self.vae.decode(z, queries=vae_points)
 
-            recon_loss = F.mse_loss(recon, cached_points)
+            recon_loss = F.mse_loss(recon, vae_points)
             kl_weight = getattr(self.args.vae, 'kl_weight', 1e-3)
             vae_loss = recon_loss + kl_weight * kl_loss
             total_loss = total_loss + vae_loss
@@ -434,7 +454,7 @@ class GaussianPredictor(nn.Module):
             assert Ctot % args.context_length == 0
             frames_img = [x[:, i*(Ctot//args.context_length):(i+1)*(Ctot//args.context_length)] for i in range(args.context_length)]
             context_imgs = torch.stack(frames_img, dim=1)  # [B, T, C_img, H, W]
-            context_latents = self._process_obs(context_imgs / 255.)  # [B, T, Cg, H', W']
+            context_latents = self._process_obs(context_imgs)  # [B, T, Cg, H', W']
             frames = [context_latents[:, i] for i in range(args.context_length)]  # list of [B, Cg, H', W']
 
             obss = [torch.cat(frames, dim=1)]
@@ -472,7 +492,7 @@ class GaussianPredictor(nn.Module):
 
         for t in range(horizon):
             ctx_imgs = torch.stack(frames[-args.context_length:], dim=1)  # [B,T,C,H,W]
-            ctx_latents = self._process_obs(ctx_imgs / 255.)
+            ctx_latents = self._process_obs(ctx_imgs)
             action = policy(torch.cat(frames[-args.context_length:], dim=1), t)
             next_latent = self.diffusion_sampler.sample(ctx_latents, action)[0]
             next_obs = next_latent

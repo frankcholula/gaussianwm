@@ -13,6 +13,6 @@ python gaussianwm/train_diffusion.py \
     world_model.vae.freeze=true \
     world_model.batch_size=12 \
     train.update_tokenizer=false \
-    output_dir=$GWM_PATH/logs/gwm_vae \
-    log_dir=$GWM_PATH/logs/gwm_vae \
-    wandb.name=dit_frozen_vae
+    output_dir=$GWM_PATH/logs/gwm_vae_v2 \
+    log_dir=$GWM_PATH/logs/gwm_vae_v2 \
+    wandb.name=dit_frozen_vae_sigma_fix

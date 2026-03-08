@@ -34,7 +34,7 @@ class DiffusionSampler:
         prev_obs = prev_obs.reshape(b, t * c, h, w)
         s_in = torch.ones(b, device=device)
         gamma_ = min(self.cfg.s_churn / (len(self.sigmas) - 1), 2**0.5 - 1)
-        x = torch.randn(b, c, h, w, device=device)
+        x = torch.randn(b, c, h, w, device=device) * self.sigmas[0]
         trajectory = [x]
         for sigma, next_sigma in zip(self.sigmas[:-1], self.sigmas[1:]):
             gamma = gamma_ if self.cfg.s_tmin <= sigma <= self.cfg.s_tmax else 0
