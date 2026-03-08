@@ -1,6 +1,7 @@
 import os
 import sys
 import math
+from contextlib import nullcontext
 
 # Add the project root directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -90,7 +91,6 @@ class GaussianPredictor(nn.Module):
             self.num_latents = args.vae.num_latents
             self.vae = create_autoencoder(
                 depth=args.vae.vae_depth,
-                # dim=self.gaussian_feature_dim,
                 dim=self.latent_dim,
                 M=self.num_latents,
                 latent_dim=self.latent_dim,
@@ -98,7 +98,25 @@ class GaussianPredictor(nn.Module):
                 N=args.observation.point_cloud_size,
                 deterministic=not args.vae.use_kl
             ).to(device)
-            self.vae_optimizer = torch.optim.AdamW(self.vae.parameters(), lr=args.optimizer.tok_lr)
+
+            # Load pretrained VAE checkpoint if provided
+            vae_ckpt_path = getattr(args.vae, 'checkpoint_path', None)
+            if vae_ckpt_path is not None:
+                ckpt = torch.load(vae_ckpt_path, map_location=device)
+                state_dict = ckpt['model'] if 'model' in ckpt else ckpt
+                self.vae.load_state_dict(state_dict)
+                cprint(f"[VAE] Loaded pretrained checkpoint from {vae_ckpt_path}", 'green')
+
+            # Freeze VAE for staged training (pretrained VAE + train DiT only)
+            vae_freeze = getattr(args.vae, 'freeze', False)
+            if vae_freeze:
+                self.vae.requires_grad_(False)
+                self.vae.eval()
+                self.vae_optimizer = None
+                cprint("[VAE] Frozen — will not be trained", 'cyan')
+            else:
+                self.vae_optimizer = torch.optim.AdamW(self.vae.parameters(), lr=args.optimizer.tok_lr)
+
             cprint(f"[VAE] Trainable parameters: {sum(p.numel() for p in self.vae.parameters() if p.requires_grad)/1e6}M", 'yellow')
             cprint(f"[VAE] Total parameters: {sum(p.numel() for p in self.vae.parameters())/1e6}M", 'yellow')
 
@@ -109,14 +127,17 @@ class GaussianPredictor(nn.Module):
                 reward_model_config.img_channels = 14
         if args.vae.use_vae:
             denoiser_config.inner_model.in_channels = args.vae.latent_dim
-            denoiser_config.inner_model.input_size = args.vae.num_latents
             denoiser_config.inner_model.patch_size = 1
-            
+
             # Pre-compute spatial dimensions for reshaping when using VAE
-            self.nh = int(math.sqrt(args.vae.num_latents))
-            self.nw = self.nh  # Assuming square spatial dimensions
-            # Update input_size to spatial dimensions
-            denoiser_config.inner_model.input_size = self.nh
+            # Find closest rectangular factorization of num_latents
+            M = args.vae.num_latents
+            self.nh = int(math.sqrt(M))
+            while M % self.nh != 0:
+                self.nh -= 1
+            self.nw = M // self.nh
+            # Update input_size to spatial dimensions (supports rectangular grids)
+            denoiser_config.inner_model.input_size = (self.nh, self.nw)
 
             if args.reward.use_reward_model:
                 reward_model_config.img_size = self.nh
@@ -166,33 +187,53 @@ class GaussianPredictor(nn.Module):
 
 
     def _process_obs(self, obs):
-        """Convert RGB obs to latent embeddings with Gaussian processing (batched version)"""
+        """Convert RGB obs to latent embeddings with Gaussian processing (batched version).
+        Runs Splatt3r internally — use _process_obs_from_points when points are already cached.
+        """
         B, T, C, H, W = obs.shape
-        embeddings = None
-
         if self.args.observation.use_gs:
             with torch.no_grad():
                 obs_flat = obs.view(B*T, C, H, W)
-                # Get Gaussian features
                 points, _ = self.splatt3r.forward_tensor(obs_flat)  # [B*T, N, 14]
+            return self._points_to_latent(points, B, T, H, W)
+        return obs  # [B, T, C, H, W]
 
-            if self.args.vae.use_vae:   # Get latent representation
+    def _process_obs_from_points(self, obs, cached_points):
+        """Convert obs to latent embeddings reusing cached Splatt3r points."""
+        B, T, C, H, W = obs.shape
+        if cached_points is not None:
+            return self._points_to_latent(cached_points, B, T, H, W)
+        if self.args.observation.use_gs:
+            return self._process_obs(obs)
+        return obs
+
+    def _preprocess_sh(self, points):
+        """Apply SH→RGB preprocessing to match train_vae.py pipeline exactly.
+        Splatt3r must receive [0,255] images (no /255 before Splatt3r).
+        Then SH channels get: (0.5 + C0*SH) / 255.0
+        This matches train_vae.py lines 63-65.
+        """
+        SH_C0 = 0.28209479177387814
+        points = points.clone()
+        colors = 0.5 + SH_C0 * points[..., -4:-1]
+        points[..., -4:-1] = colors / 255.0
+        return points
+
+    def _points_to_latent(self, points, B, T, H, W):
+        """Convert Splatt3r point cloud to latent embeddings."""
+        if self.args.vae.use_vae:
+            points = self._preprocess_sh(points)
+            vae_frozen = getattr(self.args.vae, 'freeze', False)
+            ctx = torch.no_grad() if vae_frozen else nullcontext()
+            with ctx:
                 enc = self.vae.encode(points)
                 if isinstance(enc, tuple):
-                    enc = enc[0]  # [B, T, N, C]
-                enc = enc.view(B, T, -1, enc.shape[-1])
-                embeddings = enc.permute(0, 1, 3, 2).contiguous().view(B, T, enc.shape[-1], self.nh, self.nw)
-                # [B, T, C, H, W]
-            else:
-                # [B*T, N=H*W, C=14] -> [B, T, C=14, H, W]
-                embeddings = points.view(B, T, -1, points.shape[-1]).permute(0, 1, 3, 2).contiguous()
-                # [B, T, C, N]
-                embeddings = embeddings.view(B, T, points.shape[-1], H, W)  # [B, T, C, H, W]
-                # print(f"{embeddings.shape=}")
+                    enc = enc[1]  # KLAutoEncoder returns (kl, z); take z
+            enc = enc.view(B, T, -1, enc.shape[-1])
+            return enc.permute(0, 1, 3, 2).contiguous().view(B, T, enc.shape[-1], self.nh, self.nw)
         else:
-            embeddings = obs  # [B, T, C, H, W]
-
-        return embeddings
+            embeddings = points.view(B, T, -1, points.shape[-1]).permute(0, 1, 3, 2).contiguous()
+            return embeddings.view(B, T, points.shape[-1], H, W)
 
     def update(self, batch, update_tokenizer=True, update_model=True):
         start = time.time()
@@ -203,13 +244,16 @@ class GaussianPredictor(nn.Module):
         else:
             obs, action, reward, pad_mask = batch
             pad_mask = pad_mask.to(self.device)
-        obs = obs.to(self.device) / 255.    # [B, T, C, H, W]
+        obs = obs.to(self.device).float()
+        if not self.args.observation.use_gs:
+            obs = obs / 255.
         action = action.to(self.device)     # [B, T, A]
         reward = reward.to(self.device)     # [B, T]
         if self.args.symlog:
             reward = symlog(reward)
 
-        if update_tokenizer and self.args.vae.use_vae:
+        vae_frozen = getattr(self.args.vae, 'freeze', False)
+        if update_tokenizer and self.args.vae.use_vae and not vae_frozen:
             metrics.update(self.update_vae(self.args, obs))
         if update_model:
             metrics.update(self.update_model(self.args, obs, action, reward, pad_mask))
@@ -226,17 +270,24 @@ class GaussianPredictor(nn.Module):
         # Get Gaussian features from Splatt3r
         with torch.no_grad():
             points, _ = self.splatt3r.forward_tensor(obs_flat) # e.g., [160, 4096, 14]
-            # points = torch.cat([points_1, points_2], dim=1)
+
+        # Preprocess SH to match train_vae.py pipeline
+        points = self._preprocess_sh(points)
 
         # VAE reconstruction
-        # z, _, commit_loss = self.vae.encode(points)
-        z = self.vae.encode(points) # e.g., [160, 512, 256]
-        recon = self.vae.decode(z) #queries=points)
-        
+        enc = self.vae.encode(points)
+        if isinstance(enc, tuple):
+            kl_loss, z = enc  # KLAutoEncoder returns (kl, z)
+            kl_loss = kl_loss.mean()
+        else:
+            z = enc
+            kl_loss = torch.tensor(0.0, device=z.device)
+        recon = self.vae.decode(z, queries=points)
+
         # Reconstruction loss on Gaussian parameters
         recon_loss = F.mse_loss(recon, points)
-        # loss = recon_loss + args.commit_weight * commit_loss
-        loss = recon_loss
+        kl_weight = getattr(args.vae, 'kl_weight', 1e-3)
+        loss = recon_loss + kl_weight * kl_loss
 
         loss.backward()
         self.vae_optimizer.step()
@@ -244,7 +295,7 @@ class GaussianPredictor(nn.Module):
         return {
             'tokenizer_loss': loss.item(),
             'recon_loss': recon_loss.item(),
-            # 'commit_loss': commit_loss.item()
+            'kl_loss': kl_loss.item(),
         }
 
     def update_model(self, args, obs, action, reward, pad_mask=None):
@@ -302,85 +353,92 @@ class GaussianPredictor(nn.Module):
         start = time.time()
         metrics = {}
         total_loss = torch.tensor(0.0).to(self.device)
-        
+
         if len(batch) == 3:
             obs, action, reward = batch
             pad_mask = None
         else:
             obs, action, reward, pad_mask = batch
             pad_mask = pad_mask.to(self.device)
-        obs = obs.to(self.device) / 255.    # [B, T, C, H, W]
+        obs = obs.to(self.device).float()
+        if not self.args.observation.use_gs:
+            obs = obs / 255.
         action = action.to(self.device)     # [B, T, A]
         reward = reward.to(self.device)     # [B, T]
         if self.args.symlog:
             reward = symlog(reward)
 
-        # Calculate VAE loss without optimization
-        if update_tokenizer and self.args.vae.use_vae:
+        vae_frozen = getattr(self.args.vae, 'freeze', False)
+
+        # Run Splatt3r once and cache for both VAE and DiT branches
+        cached_points = None
+        if self.args.observation.use_gs:
             B, T, C, H, W = obs.shape
             obs_flat = obs.reshape(B*T, C, H, W)
-            
-            # Get Gaussian features from Splatt3r
             with torch.no_grad():
-                points, _ = self.splatt3r.forward_tensor(obs_flat)
+                cached_points, _ = self.splatt3r.forward_tensor(obs_flat)
 
-            # VAE reconstruction
-            z = self.vae.encode(points)
-            recon = self.vae.decode(z)
-            
-            # Reconstruction loss on Gaussian parameters
-            recon_loss = F.mse_loss(recon, points)
-            vae_loss = recon_loss
-            total_loss += vae_loss
-            
+        # VAE loss (only when VAE is trainable — skip if frozen)
+        if update_tokenizer and self.args.vae.use_vae and not vae_frozen:
+            vae_points = self._preprocess_sh(cached_points)
+            enc = self.vae.encode(vae_points)
+            if isinstance(enc, tuple):
+                kl_loss, z = enc
+                kl_loss = kl_loss.mean()
+            else:
+                z = enc
+                kl_loss = torch.tensor(0.0, device=z.device)
+            recon = self.vae.decode(z, queries=vae_points)
+
+            recon_loss = F.mse_loss(recon, vae_points)
+            kl_weight = getattr(self.args.vae, 'kl_weight', 1e-3)
+            vae_loss = recon_loss + kl_weight * kl_loss
+            total_loss = total_loss + vae_loss
+
             metrics.update({
                 'tokenizer_loss': vae_loss.item(),
                 'recon_loss': recon_loss.item(),
+                'kl_loss': kl_loss.item(),
             })
 
-        # Calculate model loss without optimization
+        # DiT loss
         if update_model:
             self.model.train()
             if self.args.reward.use_reward_model:
                 self.reward_model.train()
-            
-            # Process observations to latent space
-            latent_embeddings = self._process_obs(obs)  # [B, T, D] or [B, T, C, H, W]
-            
-            # Forward through diffusion model
+
+            # Encode to latent space, reusing cached Splatt3r output
+            latent_embeddings = self._process_obs_from_points(obs, cached_points)
+
             diff_loss = self.model(
-                latent_embeddings, 
+                latent_embeddings,
                 action,
                 batch_mask_padding=pad_mask
             )
-            total_loss += diff_loss
-            
+            total_loss = total_loss + diff_loss
+
             reward_loss, reward_pred = 0.0, None
             if self.args.reward.use_reward_model:
                 reward_loss, reward_pred = self.reward_model(
-                    latent_embeddings[:, self.args.context_length:-1], 
+                    latent_embeddings[:, self.args.context_length:-1],
                     action[:, self.args.context_length:-1],
-                    latent_embeddings[:, self.args.context_length+1:], 
+                    latent_embeddings[:, self.args.context_length+1:],
                     reward[:, self.args.context_length:-1]
                 )
-
-            # Calculate total model loss
-            if self.args.reward.use_reward_model:
-                total_loss += self.args.reward.reward_weight * reward_loss
+                total_loss = total_loss + self.args.reward.reward_weight * reward_loss
 
             metrics.update({
                 'diff_loss': diff_loss.item(),
                 **({'reward_loss': reward_loss.item(),
                    'model_train/reward_mean': reward[:, self.args.context_length:].mean().item(),
-                   'model_train/reward_pred_mean': reward_pred.mean().item()} 
+                   'model_train/reward_pred_mean': reward_pred.mean().item()}
                    if self.args.reward.use_reward_model else {}),
             })
 
         metrics.update({
             "total_loss": total_loss.item(),
-            "diff_loss": diff_loss.item(),
         })
-        
+
         return total_loss, metrics
     
     @torch.no_grad()
@@ -396,7 +454,7 @@ class GaussianPredictor(nn.Module):
             assert Ctot % args.context_length == 0
             frames_img = [x[:, i*(Ctot//args.context_length):(i+1)*(Ctot//args.context_length)] for i in range(args.context_length)]
             context_imgs = torch.stack(frames_img, dim=1)  # [B, T, C_img, H, W]
-            context_latents = self._process_obs(context_imgs / 255.)  # [B, T, Cg, H', W']
+            context_latents = self._process_obs(context_imgs)  # [B, T, Cg, H', W']
             frames = [context_latents[:, i] for i in range(args.context_length)]  # list of [B, Cg, H', W']
 
             obss = [torch.cat(frames, dim=1)]
@@ -434,7 +492,7 @@ class GaussianPredictor(nn.Module):
 
         for t in range(horizon):
             ctx_imgs = torch.stack(frames[-args.context_length:], dim=1)  # [B,T,C,H,W]
-            ctx_latents = self._process_obs(ctx_imgs / 255.)
+            ctx_latents = self._process_obs(ctx_imgs)
             action = policy(torch.cat(frames[-args.context_length:], dim=1), t)
             next_latent = self.diffusion_sampler.sample(ctx_latents, action)[0]
             next_obs = next_latent
@@ -459,12 +517,17 @@ class GaussianPredictor(nn.Module):
         return torch.stack(obss, 1).float(), torch.stack(actions, 1).float(), torch.stack(rewards, 1).float()
 
     def save_snapshot(self, workdir, suffix=''):
-        # Save unwrapped model if using DDP
         model_to_save = self.module if isinstance(self, DDP) else self
         torch.save(model_to_save.model.state_dict(), os.path.join(workdir, f'model{suffix}.pt'))
+        if self.args.vae.use_vae:
+            torch.save(model_to_save.vae.state_dict(), os.path.join(workdir, f'vae{suffix}.pt'))
 
     def load_snapshot(self, workdir, suffix=''):
-        # Load works for both DDP and single GPU
-        state_dict = torch.load(os.path.join(workdir, f'model{suffix}.pt'), 
-                              map_location=f'cuda:{dist.get_rank()}' if dist.is_initialized() else 'cpu')
+        map_location = f'cuda:{dist.get_rank()}' if dist.is_initialized() else 'cpu'
+        state_dict = torch.load(os.path.join(workdir, f'model{suffix}.pt'), map_location=map_location)
         self.model.load_state_dict(state_dict)
+        if self.args.vae.use_vae:
+            vae_path = os.path.join(workdir, f'vae{suffix}.pt')
+            if os.path.exists(vae_path):
+                vae_state_dict = torch.load(vae_path, map_location=map_location)
+                self.vae.load_state_dict(vae_state_dict)

@@ -233,11 +233,12 @@ class AutoEncoder(nn.Module):
     def encode(self, pc):
         # pc: B x N x D (D=14: xyz + features)
         B, N, D = pc.shape
-        assert N == self.num_inputs, f"Expected {self.num_inputs} point cloud inputs, got {N}"
+        # Allow any N >= num_latents since FPS handles downsampling
+        assert N >= self.num_latents, f"Expected at least {self.num_latents} points, got {N}"
 
         ###### FPS sampling based on XYZ coordinates
         _, sampled_indices = fps(pc[..., :3], K=self.num_latents)
-        sampled_pc = torch.gather(pc, 1, 
+        sampled_pc = torch.gather(pc, 1,
             sampled_indices.unsqueeze(-1).expand(-1,-1,D))  # [B, K, 14], e.g., []
 
         # print(f"{sampled_pc.shape=}") # [B, K ,3], e.g., [64, 128, 3]
@@ -338,7 +339,8 @@ class KLAutoEncoder(nn.Module):
     def encode(self, pc):
         # pc: B x N x D (D=14: xyz + features)
         B, N, D = pc.shape
-        assert N == self.num_inputs
+        # Allow any N >= num_latents since FPS handles downsampling
+        assert N >= self.num_latents, f"Expected at least {self.num_latents} points, got {N}"
 
         ###### FPS sampling based on XYZ coordinates
         _, sampled_indices = fps(pc[..., :3], K=self.num_latents)
