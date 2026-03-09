@@ -140,19 +140,19 @@ def main(cfg: DictConfig):
     )
     
     start_step = 0
-    # if cfg.resume and os.path.exists(cfg.resume):
-    #     logger.info(f"Loading checkpoint from {cfg.resume}")
-    #     model.load_snapshot(cfg.resume)
-    #     # Extract step number if available in the checkpoint name
-    #     if '_' in os.path.basename(cfg.resume):
-    #         try:
-    #             checkpoint_step = os.path.basename(cfg.resume).split('_')[-1]
-    #             if checkpoint_step.endswith('.pt'):
-    #                 checkpoint_step = checkpoint_step[:-3]
-    #             start_step = int(checkpoint_step) + 1
-    #             logger.info(f"Resuming from step {start_step}")
-    #         except:
-    #             logger.info("Could not determine start step from checkpoint filename")
+    checkpoint_dir = Path(cfg.output_dir) / "checkpoints"
+    resume_ckpt = checkpoint_dir / "training_state_latest.pt"
+    if resume_ckpt.exists():
+        logger.info(f"Found checkpoint at {resume_ckpt}, resuming...")
+        ckpt = torch.load(resume_ckpt, map_location=device)
+        model_to_load = model.module if cfg.distributed.distributed else model
+        model_to_load.load_snapshot(checkpoint_dir, suffix='_latest')
+        if ckpt.get('optimizer'):
+            optimizer.load_state_dict(ckpt['optimizer'])
+        else:
+            logger.info("No optimizer state in checkpoint, using fresh optimizer")
+        start_step = ckpt['step'] + 1
+        logger.info(f"Resumed from step {start_step}")
     
     is_main_process = distributed_utils.is_main_process()
 
@@ -195,6 +195,8 @@ def main(cfg: DictConfig):
             model_to_save = model.module if cfg.distributed.distributed else model
             model_to_save.save_snapshot(checkpoint_dir, suffix=f"_{step}")
             model_to_save.save_snapshot(checkpoint_dir, suffix="_latest")
+            torch.save({'step': step, 'optimizer': optimizer.state_dict()},
+                       checkpoint_dir / "training_state_latest.pt")
 
     logger.info("Saving final model")
     checkpoint_dir = Path(cfg.output_dir) / "checkpoints"
