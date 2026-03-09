@@ -36,7 +36,8 @@ def collate_fn(batch):
         pad_mask = torch.stack([item[3] for item in batch])
         return obs, action, reward, pad_mask
     elif isinstance(batch[0], tuple) and len(batch[0]) == 3:
-        obs = torch.stack([item[0] for item in batch])
+        obs_raw = [item[0] for item in batch]
+        obs = torch.stack([o[0] if isinstance(o, (tuple, list)) else o for o in obs_raw])
         action = torch.stack([item[1] for item in batch])
         reward = torch.stack([item[2] for item in batch])
         return obs, action, reward
@@ -47,7 +48,16 @@ def collate_fn(batch):
 def train_step(model, batch, optimizer, step, cfg):
     """Train for one step"""
     # [B, T, H, W, C] -> [B, T, C, H, W]
-    batch[0] = batch[0].permute(0, 1, 4, 2, 3).to(model.device)
+    batch = list(batch)
+    # Unwrap DDP to access vae_optimizer
+    raw_model = model.module if isinstance(model, DDP) else model
+    batch[0] = batch[0].permute(0, 1, 4, 2, 3).to(raw_model.device)
+
+    vae_optimizer = getattr(raw_model, 'vae_optimizer', None)
+    vae_trainable = (cfg.train.update_tokenizer
+                     and cfg.world_model.vae.use_vae
+                     and not getattr(cfg.world_model.vae, 'freeze', False)
+                     and vae_optimizer is not None)
 
     total_loss, metrics = model(
         batch,
@@ -57,6 +67,9 @@ def train_step(model, batch, optimizer, step, cfg):
     total_loss.backward()
     optimizer.step()
     optimizer.zero_grad()
+    if vae_trainable:
+        vae_optimizer.step()
+        vae_optimizer.zero_grad()
     return metrics
 
 
@@ -113,7 +126,7 @@ def main(cfg: DictConfig):
         # sampler=train_sampler,
         num_workers=cfg.dataloader.num_workers,
         # pin_memory=True,
-        # collate_fn=collate_fn,
+        collate_fn=collate_fn,
         # drop_last=True
     )
     val_loader = DataLoader(
@@ -122,24 +135,24 @@ def main(cfg: DictConfig):
         # sampler=val_sampler,
         num_workers=cfg.dataloader.num_workers,
         # pin_memory=True,
-        # collate_fn=collate_fn,
+        collate_fn=collate_fn,
         # drop_last=True
     )
     
     start_step = 0
-    # if cfg.resume and os.path.exists(cfg.resume):
-    #     logger.info(f"Loading checkpoint from {cfg.resume}")
-    #     model.load_snapshot(cfg.resume)
-    #     # Extract step number if available in the checkpoint name
-    #     if '_' in os.path.basename(cfg.resume):
-    #         try:
-    #             checkpoint_step = os.path.basename(cfg.resume).split('_')[-1]
-    #             if checkpoint_step.endswith('.pt'):
-    #                 checkpoint_step = checkpoint_step[:-3]
-    #             start_step = int(checkpoint_step) + 1
-    #             logger.info(f"Resuming from step {start_step}")
-    #         except:
-    #             logger.info("Could not determine start step from checkpoint filename")
+    checkpoint_dir = Path(cfg.output_dir) / "checkpoints"
+    resume_ckpt = checkpoint_dir / "training_state_latest.pt"
+    if resume_ckpt.exists():
+        logger.info(f"Found checkpoint at {resume_ckpt}, resuming...")
+        ckpt = torch.load(resume_ckpt, map_location=device)
+        model_to_load = model.module if cfg.distributed.distributed else model
+        model_to_load.load_snapshot(checkpoint_dir, suffix='_latest')
+        if ckpt.get('optimizer'):
+            optimizer.load_state_dict(ckpt['optimizer'])
+        else:
+            logger.info("No optimizer state in checkpoint, using fresh optimizer")
+        start_step = ckpt['step'] + 1
+        logger.info(f"Resumed from step {start_step}")
     
     is_main_process = distributed_utils.is_main_process()
 
@@ -182,6 +195,8 @@ def main(cfg: DictConfig):
             model_to_save = model.module if cfg.distributed.distributed else model
             model_to_save.save_snapshot(checkpoint_dir, suffix=f"_{step}")
             model_to_save.save_snapshot(checkpoint_dir, suffix="_latest")
+            torch.save({'step': step, 'optimizer': optimizer.state_dict()},
+                       checkpoint_dir / "training_state_latest.pt")
 
     logger.info("Saving final model")
     checkpoint_dir = Path(cfg.output_dir) / "checkpoints"

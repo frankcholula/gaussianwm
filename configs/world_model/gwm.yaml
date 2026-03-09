@@ -24,6 +24,8 @@ observation:
 # 3D VAE parameters
 vae:
   use_vae: false
+  checkpoint_path: null   # path to pretrained VAE .pth checkpoint
+  freeze: false           # freeze VAE weights (for staged training)
   num_latents: 16384
   latent_dim: 256
   vae_depth: 2  # renamed from num_res_blocks
