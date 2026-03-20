@@ -64,14 +64,26 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, los
         colors = 0.5 + SH_C0 * points[..., -4:-1]
         points[..., -4:-1] = colors / 255.0
 
-        points, _ = fps(points, K=cfg.model.point_cloud_size)
-        labels = points.clone()
+        use_learned_queries = getattr(cfg.vae, 'use_learned_queries', False)
+        if use_learned_queries:
+            # Learned queries: labels are full 16384 raster-ordered points,
+            # encoder gets FPS'd input, decoder uses learned queries
+            labels = points.clone()
+            encoder_input, _ = fps(points, K=2048)
+        else:
+            # Old VAE: FPS both input and labels
+            points, _ = fps(points, K=cfg.model.point_cloud_size)
+            labels = points.clone()
+            encoder_input = points
 
-        points = points.to(device, non_blocking=True)
+        encoder_input = encoder_input.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast(device_type="cuda", enabled=False):
-            outputs = model(points, points)
+            if use_learned_queries:
+                outputs = model(encoder_input)
+            else:
+                outputs = model(encoder_input, encoder_input)
 
             if 'kl' in outputs:
                 loss_kl = outputs['kl']
@@ -153,14 +165,23 @@ def evaluate(model, data_loader, device, cfg):
         colors = 0.5 + SH_C0 * points[..., -4:-1]
         points[..., -4:-1] = colors / 255.0
 
-        points, _ = fps(points, K=cfg.model.point_cloud_size)
-        labels = points.clone()
+        use_learned_queries = getattr(cfg.vae, 'use_learned_queries', False)
+        if use_learned_queries:
+            labels = points.clone()
+            encoder_input, _ = fps(points, K=2048)
+        else:
+            points, _ = fps(points, K=cfg.model.point_cloud_size)
+            labels = points.clone()
+            encoder_input = points
 
-        points = points.to(device, non_blocking=True)
+        encoder_input = encoder_input.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast(device_type="cuda", enabled=False):
-            outputs = model(points, points)
+            if use_learned_queries:
+                outputs = model(encoder_input)
+            else:
+                outputs = model(encoder_input, encoder_input)
 
             if 'kl' in outputs:
                 loss_kl = outputs['kl']
@@ -249,7 +270,8 @@ def main(cfg: DictConfig):
         latent_dim=cfg.vae.latent_dim,
         output_dim=cfg.vae.output_dim,
         N=cfg.vae.point_cloud_size,
-        deterministic=not cfg.vae.use_kl
+        deterministic=not cfg.vae.use_kl,
+        use_learned_queries=getattr(cfg.vae, 'use_learned_queries', False),
     ).to(device)
 
     model_without_ddp = model

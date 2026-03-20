@@ -96,7 +96,8 @@ class GaussianPredictor(nn.Module):
                 latent_dim=self.latent_dim,
                 output_dim=self.gaussian_feature_dim,
                 N=args.observation.point_cloud_size,
-                deterministic=not args.vae.use_kl
+                deterministic=not args.vae.use_kl,
+                use_learned_queries=getattr(args.vae, 'use_learned_queries', False),
             ).to(device)
 
             # Load pretrained VAE checkpoint if provided

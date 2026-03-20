@@ -183,6 +183,8 @@ class DiagonalGaussianDistribution(object):
     def mode(self):
         return self.mean
 
+
+
 class AutoEncoder(nn.Module):
     def __init__(
         self,
@@ -197,6 +199,7 @@ class AutoEncoder(nn.Module):
         dim_head=64,
         weight_tie_layers=False,
         decoder_ff=False,
+        use_learned_queries=False,
     ):
         super().__init__()
 
@@ -204,6 +207,9 @@ class AutoEncoder(nn.Module):
 
         self.num_inputs = num_inputs
         self.num_latents = num_latents
+
+        if use_learned_queries:
+            self.learned_queries = nn.Parameter(torch.randn(num_inputs, dim) * 0.02)
 
         self.cross_attend_blocks = nn.ModuleList([
             PreNorm(dim, Attention(dim, dim, heads = 1, dim_head = dim), context_dim = dim),
@@ -255,6 +261,14 @@ class AutoEncoder(nn.Module):
         return x
 
 
+    def _get_decoder_queries(self, x, queries=None):
+        """Get decoder query embeddings: learned queries if available, else external queries."""
+        if hasattr(self, 'learned_queries'):
+            return self.learned_queries.unsqueeze(0).expand(x.shape[0], -1, -1)
+        elif queries is not None:
+            return self.point_embed(queries)
+        return None
+
     def decode(self, x, queries=None):
 
         for self_attn, self_ff in self.layers:
@@ -262,22 +276,20 @@ class AutoEncoder(nn.Module):
             x = self_ff(x) + x
 
         # cross attend from decoder queries to latents
-        if queries is not None:
-            queries_embeddings = self.point_embed(queries)
-            latents = self.decoder_cross_attn(queries_embeddings, context = x)
+        queries_embeddings = self._get_decoder_queries(x, queries)
+        if queries_embeddings is not None:
+            latents = self.decoder_cross_attn(queries_embeddings, context=x)
         else:
             latents = x
 
         # optional decoder feedforward
         if exists(self.decoder_ff):
             latents = latents + self.decoder_ff(latents)
-        
+
         return self.to_outputs(latents)
 
-    def forward(self, pc, queries):
+    def forward(self, pc, queries=None):
         x = self.encode(pc)
-
-        # print(f"{x.shape=}")  # [B, 128, 128]
 
         o = self.decode(x, queries).squeeze(-1)
 
@@ -297,7 +309,8 @@ class KLAutoEncoder(nn.Module):
         heads = 8,
         dim_head = 64,
         weight_tie_layers = False,
-        decoder_ff = False
+        decoder_ff = False,
+        use_learned_queries = False,
     ):
         super().__init__()
 
@@ -305,6 +318,9 @@ class KLAutoEncoder(nn.Module):
 
         self.num_inputs = num_inputs
         self.num_latents = num_latents
+
+        if use_learned_queries:
+            self.learned_queries = nn.Parameter(torch.randn(num_inputs, dim) * 0.02)
 
         self.cross_attend_blocks = nn.ModuleList([
             PreNorm(dim, Attention(dim, dim, heads = 1, dim_head = dim), context_dim = dim),
@@ -367,7 +383,15 @@ class KLAutoEncoder(nn.Module):
         return kl, x
 
 
-    def decode(self, x, queries):
+    def _get_decoder_queries(self, x, queries=None):
+        """Get decoder query embeddings: learned queries if available, else external queries."""
+        if hasattr(self, 'learned_queries'):
+            return self.learned_queries.unsqueeze(0).expand(x.shape[0], -1, -1)
+        elif queries is not None:
+            return self.point_embed(queries)
+        return None
+
+    def decode(self, x, queries=None):
 
         x = self.proj(x)
 
@@ -376,25 +400,28 @@ class KLAutoEncoder(nn.Module):
             x = self_ff(x) + x
 
         # cross attend from decoder queries to latents
-        queries_embeddings = self.point_embed(queries)
-        latents = self.decoder_cross_attn(queries_embeddings, context = x)
+        queries_embeddings = self._get_decoder_queries(x, queries)
+        if queries_embeddings is not None:
+            latents = self.decoder_cross_attn(queries_embeddings, context=x)
+        else:
+            latents = x
 
         # optional decoder feedforward
         if exists(self.decoder_ff):
             latents = latents + self.decoder_ff(latents)
-        
+
         return self.to_outputs(latents)
 
-    def forward(self, pc, queries):
+    def forward(self, pc, queries=None):
         kl, x = self.encode(pc)
 
         o = self.decode(x, queries).squeeze(-1)
 
-        # return o.squeeze(-1), kl
         return {'logits': o, 'kl': kl}
 
 def create_autoencoder(
-        dim=512, M=512, depth=24, latent_dim=64, output_dim=1, N=2048, deterministic=False
+        dim=512, M=512, depth=24, latent_dim=64, output_dim=1, N=2048,
+        deterministic=False, use_learned_queries=False
     ):
     if deterministic:
         model = AutoEncoder(
@@ -406,6 +433,7 @@ def create_autoencoder(
             num_latents=M,
             heads=8,
             dim_head=64,
+            use_learned_queries=use_learned_queries,
         )
     else:
         model = KLAutoEncoder(
@@ -418,6 +446,7 @@ def create_autoencoder(
             latent_dim=latent_dim,
             heads=8,
             dim_head=64,
+            use_learned_queries=use_learned_queries,
         )
     return model
 
