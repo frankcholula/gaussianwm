@@ -372,6 +372,17 @@ class OXEDataset(IterableDataset):
 
 
 def build_gaussian_splatting_reconstruction_dataset(split, cfg):
+    if cfg.dataset_name == 'nwm':
+        from gaussianwm.processor.nwm_dataset import NWMEpisodeDataset
+        return NWMEpisodeDataset(
+            data_path=cfg.data_path,
+            segment_length=cfg.segment_length,
+            image_size=cfg.image_size,
+            view=cfg.view,
+            split=split,
+            val_ratio=cfg.val_ratio,
+            seed=cfg.seed,
+        )
     if cfg.dataset_name == 'droid':
         return DroidDataset(
             data_path=cfg.data_path,

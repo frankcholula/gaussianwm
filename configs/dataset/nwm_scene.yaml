@@ -1,0 +1,10 @@
+# NWM OGBench-Scene episode export (rig-v3 primary view v2)
+dataset_name: nwm
+data_path: /mnt/Data/nwm-baselines/ogb_scene_ep
+segment_length: 10
+context_length: 2
+action_dim: 5
+image_size: 128
+view: 0  # index into exported views axis (export default = single view v2)
+val_ratio: 0.05
+seed: ${seed}
