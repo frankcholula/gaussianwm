@@ -1,0 +1,55 @@
+# @package _global_
+# GWM raw-feature DiT on NWM OGBench-Scene with true (v2, v3) stereo context pair
+defaults:
+  - world_model: gwm
+  - dataset: nwm_scene_2v
+  - _self_
+
+seed: 42
+device: cuda
+
+world_model:
+  observation:
+    use_gs: true
+  reward:
+    use_reward_model: false
+
+dataloader:
+  num_workers: 0
+  pin_memory: false
+
+distributed:
+  rank: null
+  gpu: null
+  distributed: false
+  world_size: 1
+  local_rank: -1
+  dist_on_itp: false
+  dist_backend: nccl
+  dist_url: env://
+  dist_eval: false
+
+train:
+  max_steps: 100000
+  log_every: 10
+  save_every: 5000
+  update_tokenizer: false
+  update_model: true
+  batch_accumulation: 1
+
+eval:
+  eval_every: 1000
+  num_rollout_batches: 10
+  save_rollouts: true
+  rollout_horizon: 8
+  save_max_samples: 1
+
+output_dir: logs/nwm_scene_2v
+log_dir: logs/nwm_scene_2v
+use_wandb: false
+wandb:
+  project: gaussianwm
+  name: null
+
+resume: null
+start_step: 0

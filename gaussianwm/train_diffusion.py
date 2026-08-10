@@ -46,8 +46,10 @@ def collate_fn(batch):
 
 def train_step(model, batch, optimizer, step, cfg):
     """Train for one step"""
-    # [B, T, H, W, C] -> [B, T, C, H, W]
-    batch[0] = batch[0].permute(0, 1, 4, 2, 3).to(model.device)
+    # [B, T, H, W, C] -> [B, T, C, H, W]; with view axis [B, T, V, H, W, C] -> [B, T, V, C, H, W]
+    obs = batch[0]
+    perm = (0, 1, 2, 5, 3, 4) if obs.dim() == 6 else (0, 1, 4, 2, 3)
+    batch[0] = obs.permute(*perm).to(model.device)
 
     total_loss, metrics = model(
         batch,

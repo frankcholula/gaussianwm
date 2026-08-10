@@ -382,6 +382,7 @@ def build_gaussian_splatting_reconstruction_dataset(split, cfg):
             split=split,
             val_ratio=cfg.val_ratio,
             seed=cfg.seed,
+            data_path2=cfg.get("data_path2"),
         )
     if cfg.dataset_name == 'droid':
         return DroidDataset(

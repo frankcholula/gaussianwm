@@ -1,0 +1,11 @@
+# NWM OGBench-Scene stereo pair: v2 (primary, state-aligned) + v3 context
+dataset_name: nwm
+data_path: /mnt/Data/nwm-baselines/ogb_scene_ep
+data_path2: /mnt/Data/nwm-baselines/ogb_scene_ep_v3ctx
+segment_length: 10
+context_length: 2
+action_dim: 5
+image_size: 128
+view: 0  # index into exported views axis (each export = single view)
+val_ratio: 0.05
+seed: ${seed}

@@ -167,14 +167,20 @@ class GaussianPredictor(nn.Module):
 
     def _process_obs(self, obs):
         """Convert RGB obs to latent embeddings with Gaussian processing (batched version)"""
-        B, T, C, H, W = obs.shape
+        if obs.dim() == 6:  # [B, T, 2, C, H, W] stereo pair; state stays view0-aligned
+            B, T, V, C, H, W = obs.shape
+            assert V == 2 and self.args.observation.use_gs
+            pair = obs.reshape(B * T, V, C, H, W)
+            views = (pair[:, 0], pair[:, 1])
+        else:
+            B, T, C, H, W = obs.shape
+            views = (obs.view(B * T, C, H, W),)
         embeddings = None
 
         if self.args.observation.use_gs:
             with torch.no_grad():
-                obs_flat = obs.view(B*T, C, H, W)
-                # Get Gaussian features
-                points, _ = self.splatt3r.forward_tensor(obs_flat)  # [B*T, N, 14]
+                # Get Gaussian features; pred1 is aligned to views[0]
+                points, _ = self.splatt3r.forward_tensor(*views)  # [B*T, N, 14]
 
             if self.args.vae.use_vae:   # Get latent representation
                 enc = self.vae.encode(points)
