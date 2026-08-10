@@ -10,17 +10,20 @@ import pathlib
 from typing import Dict, List, Tuple, Optional, Union, Any
 import glob
 from pathlib import Path
-import tensorflow as tf
-import tensorflow_graphics.geometry.transformation as tfg
+try:  # droid/RLDS path only — TF stack absent in the nwm-only cluster env
+    import tensorflow as tf
+    import tensorflow_graphics.geometry.transformation as tfg
 
-from gaussianwm.processor.rlds import make_interleaved_dataset, make_single_dataset
-from gaussianwm.processor.rlds.oxe import OXE_NAMED_MIXTURES, get_oxe_dataset_kwargs_and_weights
-# from gaussianwm.processor.rlds.utils.data_utils import NormalizationType, combine_dataset_statistics
-from gaussianwm.processor.rlds.utils.data_utils import NormalizationType
-from gaussianwm.processor.rlds.dataset import make_dataset_from_rlds
+    from gaussianwm.processor.rlds import make_interleaved_dataset, make_single_dataset
+    from gaussianwm.processor.rlds.oxe import OXE_NAMED_MIXTURES, get_oxe_dataset_kwargs_and_weights
+    # from gaussianwm.processor.rlds.utils.data_utils import NormalizationType, combine_dataset_statistics
+    from gaussianwm.processor.rlds.utils.data_utils import NormalizationType
+    from gaussianwm.processor.rlds.dataset import make_dataset_from_rlds
 
-# Configure Tensorflow with *no GPU devices* (to prevent clobber with PyTorch)
-tf.config.set_visible_devices([], "GPU")
+    # Configure Tensorflow with *no GPU devices* (to prevent clobber with PyTorch)
+    tf.config.set_visible_devices([], "GPU")
+except ImportError:
+    tf = None
 
 
 def euler_to_rmat(euler):
