@@ -90,7 +90,9 @@ def to_u8(img):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--vb", type=int, required=True)       # rig index of pair view B (A is always v2)
+    ap.add_argument("--va", type=int, default=2)           # rig index of pair view A (anchor)
+    ap.add_argument("--vb", type=int, required=True)
+    ap.add_argument("--idx-a", type=int, default=0)
     ap.add_argument("--preds-a", default=None)             # 64px pred npz for v2 (ignored with --gt-input)
     ap.add_argument("--preds-b", default=None)
     ap.add_argument("--data", required=True)               # v2 GT export (ctx + poses.npz)
@@ -110,23 +112,25 @@ def main():
 
     poses = np.load(Path(args.data) / "poses.npz")
     c2w = torch.from_numpy(poses["c2w"]).float().cuda()
-    rels = [torch.linalg.inv(c2w[2]) @ c2w[v] for v in TGT_VIEWS]  # splat frame = v2 cam frame
+    rels = {v: torch.linalg.inv(c2w[args.va]) @ c2w[v] for v in (2, *TGT_VIEWS) if v != args.va}  # splat frame = view-A cam frame
 
     lf = Lifter()
     out = {v: np.empty((n, HORIZON, RES, RES, 3), dtype=np.uint8) for v in (2, *TGT_VIEWS)}
     for i, (sa, sb) in enumerate(zip(shards, shards_b)):
         tic = time.time()
         t0 = (i * 37) % (201 - SEG)
-        fa, fb = np.load(sa)["frames"][:, 0], np.load(sb)["frames"][:, args.idx_b]
+        fa, fb = np.load(sa)["frames"][:, args.idx_a], np.load(sb)["frames"][:, args.idx_b]
         gt128 = [x.permute(1, 2, 0).cuda() for x in down128(np.load(Path(args.tgt) / sa.name)["frames"][t0 + 3])]
 
         g, covs, g1 = lf.lift_pair(up224(fa[t0 + 3]), up224(fb[t0 + 3]))
-        s = calibrate(lf, g, covs, rels, lf.ls_K(g1), gt128)
-        srels = []
-        for r in rels:
+        cal_rels = [rels[v] for v in TGT_VIEWS if v in rels]
+        cal_gt = [gt128[j] for j, v in enumerate(TGT_VIEWS) if v in rels]
+        s = calibrate(lf, g, covs, cal_rels, lf.ls_K(g1), cal_gt)
+        srels = {}
+        for v, r in rels.items():
             c = r.clone()
             c[:3, 3] /= s
-            srels.append(c)
+            srels[v] = c
         del g, covs
 
         for t in range(HORIZON):
@@ -136,15 +140,15 @@ def main():
                 ia, ib = up224(pa[i, t]), up224(pb[i, t])
             g, covs, g1 = lf.lift_pair(ia, ib)
             K = lf.ls_K(g1)
-            out[2][i, t] = to_u8(lf.render(g, covs, lf.eye, K))
-            for v, c in zip(TGT_VIEWS, srels):
+            for v in (2, *TGT_VIEWS):
+                c = lf.eye if v == args.va else srels[v]
                 out[v][i, t] = to_u8(lf.render(g, covs, c, K))
             del g, covs
         torch.cuda.empty_cache()
         if i % 25 == 0:
             print(f"{i}/{n} s={s:.3f} {time.time() - tic:.1f}s/ep", flush=True)
 
-    stem = f"{'gt2v' if args.gt_input else 'ivgpt2v'}_splat_p2{args.vb}"
+    stem = f"{'gt2v' if args.gt_input else 'ivgpt2v'}_splat_p{args.va}{args.vb}"
     od = Path(args.out_dir); od.mkdir(parents=True, exist_ok=True)
     for v in (2, *TGT_VIEWS):
         np.savez_compressed(od / f"{stem}_v{v}.npz", pred=out[v], model=stem, view=v)
